@@ -39,7 +39,10 @@ export function LichessControls() {
     // the connection is confirmed, so a stale stream event from a previous
     // game can never land on the fresh one -- connect() only unlocks moves
     // (enterPlayMode) once Lichess actually confirms the stream opened.
-    startNewGame(humanColor);
+    startNewGame(
+      { w: humanColor === "w" ? "human" : "lichess", b: humanColor === "b" ? "human" : "lichess" },
+      humanColor,
+    );
     await connect(gameIdInput);
   }
 

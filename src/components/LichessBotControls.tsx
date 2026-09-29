@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { parseBotOnlineList, type LichessBotSummary } from "../lib/lichess";
-import { useEngineStore } from "../state/engineStore";
 import { useLichessBotStore } from "../state/lichessBotStore";
 
 const UPGRADE_CONFIRM_TEXT = "UPGRADE";
@@ -24,7 +24,10 @@ export function LichessBotControls() {
   const [challengingUsername, setChallengingUsername] = useState<string | null>(null);
   const [challengeError, setChallengeError] = useState<string | null>(null);
 
-  const enginePath = useEngineStore((s) => s.path);
+  const enginePath = useLichessBotStore((s) => s.enginePath);
+  const setEnginePath = useLichessBotStore((s) => s.setEnginePath);
+  const movetimeMs = useLichessBotStore((s) => s.movetimeMs);
+  const setMovetimeMs = useLichessBotStore((s) => s.setMovetimeMs);
 
   const status = useLichessBotStore((s) => s.status);
   const errorMessage = useLichessBotStore((s) => s.errorMessage);
@@ -36,6 +39,12 @@ export function LichessBotControls() {
   const listening = status === "listening" || status === "playing";
   const canChallenge = status === "listening";
   const canUpgrade = confirmText.trim().toUpperCase() === UPGRADE_CONFIRM_TEXT;
+
+  async function chooseEngine() {
+    const picked = await open({ multiple: false });
+    if (!picked || Array.isArray(picked)) return;
+    setEnginePath(picked);
+  }
 
   async function upgrade() {
     if (await upgradeToBotAccount()) setConfirmText("");
@@ -92,7 +101,20 @@ export function LichessBotControls() {
         </button>
       </div>
 
-      {!enginePath && <p className="hint">Choose an engine binary above first.</p>}
+      <button onClick={chooseEngine} disabled={listening}>
+        {enginePath ? `Engine: ${deriveEngineIdentifier(enginePath)}` : "Choose engine binary…"}
+      </button>
+      <label className="engine-field">
+        Movetime (ms)
+        <input
+          type="number"
+          min={100}
+          step={100}
+          value={movetimeMs}
+          onChange={(e) => setMovetimeMs(Number(e.target.value))}
+          disabled={listening}
+        />
+      </label>
       {!listening ? (
         <button onClick={() => startListening()} disabled={!enginePath}>
           Start listening for challenges

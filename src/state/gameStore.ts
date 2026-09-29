@@ -11,6 +11,12 @@ import {
 export type CameraMode = "2d" | "3d";
 export type GameMode = "replay" | "play";
 
+/** What drives a given side's moves. "lichess" means moves arrive from (and
+ * are sent to) a live Lichess game stream -- see lichessStore.ts /
+ * lichessBotStore.ts. */
+export type Controller = "human" | "engine" | "lichess";
+export type Controllers = { w: Controller; b: Controller };
+
 interface GameState {
   plies: Ply[];
   ply: number;
@@ -18,7 +24,17 @@ interface GameState {
   loadError: string | null;
 
   mode: GameMode;
-  humanColor: "w" | "b";
+  controllers: Controllers;
+  /** Which side's home ranks render at the bottom of the view. Deliberately
+   * independent of `controllers` -- it's purely cosmetic ("which side do I
+   * want to watch from"), not "who is human," since a game can have no
+   * human side at all (engine vs. engine, engine vs. Lichess). */
+  pov: "w" | "b";
+  /** Floor for the delay between plies when *both* sides are engine-
+   * controlled, so a fully-automated game stays human-watchable instead of
+   * flashing by at whatever speed the engines themselves move. Ignored
+   * otherwise -- a human's own reaction time already paces every other mode. */
+  playbackDelayMs: number;
   selectedSquare: string | null;
   legalDestinationSquares: string[];
 
@@ -30,8 +46,10 @@ interface GameState {
   goToEnd: () => void;
   setCameraMode: (mode: CameraMode) => void;
   setLoadError: (message: string | null) => void;
+  setPov: (pov: "w" | "b") => void;
+  setPlaybackDelayMs: (ms: number) => void;
 
-  startNewGame: (humanColor: "w" | "b") => void;
+  startNewGame: (controllers: Controllers, pov?: "w" | "b") => void;
   enterPlayMode: () => void;
   exitPlayMode: () => void;
   selectSquare: (square: string) => void;
@@ -48,7 +66,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   loadError: null,
 
   mode: "replay",
-  humanColor: "w",
+  controllers: { w: "human", b: "engine" },
+  pov: "w",
+  playbackDelayMs: 1500,
   selectedSquare: null,
   legalDestinationSquares: [],
 
@@ -85,21 +105,27 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setLoadError: (loadError) => set({ loadError }),
 
-  startNewGame: (humanColor) =>
-    set({
+  setPov: (pov) => set({ pov }),
+
+  setPlaybackDelayMs: (playbackDelayMs) => set({ playbackDelayMs }),
+
+  startNewGame: (controllers, pov) =>
+    set((state) => ({
       plies: [],
       ply: 0,
       // Deliberately stays "replay" (moves locked) here -- flipping to
-      // "play" is a separate step (enterPlayMode), called only once the
-      // engine actually confirms it started. Flipping it here, optimistically,
-      // is exactly what let a human move pieces around with no engine
-      // backing the game at all when engine_start subsequently failed.
+      // "play" is a separate step (enterPlayMode), called only once every
+      // requested engine/connection actually confirms it started. Flipping
+      // it here, optimistically, is exactly what let a human move pieces
+      // around with nothing backing the game at all if that subsequently
+      // failed.
       mode: "replay",
-      humanColor,
+      controllers,
+      pov: pov ?? state.pov,
       selectedSquare: null,
       legalDestinationSquares: [],
       loadError: null,
-    }),
+    })),
 
   enterPlayMode: () => set({ mode: "play" }),
 
@@ -109,10 +135,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   selectSquare: (square) => {
     const state = get();
-    // Only the human's own turn, on the live position, in play mode.
+    // Only a human-controlled side's own turn, on the live position, in
+    // play mode.
     if (state.mode !== "play" || state.ply !== state.plies.length) return;
     const fen = fenAtPly(state.plies, state.ply);
-    if (sideToMove(fen) !== state.humanColor) return;
+    const toMove = sideToMove(fen);
+    if (state.controllers[toMove] !== "human") return;
 
     if (state.selectedSquare === square) {
       set({ selectedSquare: null, legalDestinationSquares: [] });
@@ -124,8 +152,10 @@ export const useGameStore = create<GameState>((set, get) => ({
       return;
     }
 
+    // toMove is the human's own color here -- the controller check above
+    // already established that the side to move is human-controlled.
     const piece = fenToPieces(fen).find((p) => p.square === square);
-    if (!piece || piece.color !== state.humanColor) {
+    if (!piece || piece.color !== toMove) {
       set({ selectedSquare: null, legalDestinationSquares: [] });
       return;
     }

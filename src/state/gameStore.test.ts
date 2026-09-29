@@ -1,36 +1,48 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useGameStore } from "./gameStore";
 
+const HUMAN_WHITE = { w: "human", b: "engine" } as const;
+const HUMAN_BLACK = { w: "engine", b: "human" } as const;
+
 beforeEach(() => {
   // startNewGame alone leaves moves locked (mode stays "replay") -- see
   // enterPlayMode's own tests below. Most tests in this file want to
   // simulate an actually-started game (engine confirmed, moves allowed),
   // so they need both calls.
-  useGameStore.getState().startNewGame("w");
+  useGameStore.getState().startNewGame(HUMAN_WHITE);
   useGameStore.getState().enterPlayMode();
 });
 
 describe("startNewGame", () => {
-  it("resets to an empty game with the chosen human color, but leaves moves locked", () => {
-    useGameStore.getState().startNewGame("b");
+  it("resets to an empty game with the chosen controllers, but leaves moves locked", () => {
+    useGameStore.getState().startNewGame(HUMAN_BLACK);
     const state = useGameStore.getState();
     expect(state.mode).toBe("replay");
-    expect(state.humanColor).toBe("b");
+    expect(state.controllers).toEqual(HUMAN_BLACK);
     expect(state.plies).toEqual([]);
     expect(state.ply).toBe(0);
     expect(state.selectedSquare).toBeNull();
   });
 
   it("does not allow moves until enterPlayMode is also called", () => {
-    useGameStore.getState().startNewGame("w");
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
     useGameStore.getState().selectSquare("e2");
     expect(useGameStore.getState().selectedSquare).toBeNull();
+  });
+
+  it("leaves pov untouched when not given, but applies it when given", () => {
+    useGameStore.getState().setPov("b");
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
+    expect(useGameStore.getState().pov).toBe("b");
+
+    useGameStore.getState().startNewGame(HUMAN_WHITE, "w");
+    expect(useGameStore.getState().pov).toBe("w");
   });
 });
 
 describe("enterPlayMode / exitPlayMode", () => {
   it("enterPlayMode unlocks moves", () => {
-    useGameStore.getState().startNewGame("w");
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
     useGameStore.getState().enterPlayMode();
     useGameStore.getState().selectSquare("e2");
     expect(useGameStore.getState().selectedSquare).toBe("e2");
@@ -90,6 +102,22 @@ describe("selectSquare", () => {
     useGameStore.getState().selectSquare("e2");
     useGameStore.getState().selectSquare("e4"); // white just moved; black to move
     useGameStore.getState().selectSquare("d2"); // white piece, but not white's turn
+    expect(useGameStore.getState().selectedSquare).toBeNull();
+  });
+
+  it("allows a human-controlled black side to move on black's turn", () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    useGameStore.getState().enterPlayMode();
+    useGameStore.getState().attemptMove("e2", "e4"); // engine's own move, applied directly
+    useGameStore.getState().selectSquare("e7");
+    expect(useGameStore.getState().selectedSquare).toBe("e7");
+  });
+
+  it("never allows clicking a side controlled by anything other than human (engine or lichess)", () => {
+    useGameStore.getState().startNewGame({ w: "human", b: "lichess" });
+    useGameStore.getState().enterPlayMode();
+    useGameStore.getState().attemptMove("e2", "e4"); // white's move; black (lichess) to move
+    useGameStore.getState().selectSquare("e7");
     expect(useGameStore.getState().selectedSquare).toBeNull();
   });
 });
