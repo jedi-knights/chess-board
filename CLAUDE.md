@@ -75,6 +75,10 @@ this file and the human-facing docs.
   group's position is never set via a JSX `position` attribute, only imperatively, so r3f's
   own prop-diffing never fights the animation. `BoardScene` only computes `animateFrom` for
   an exact single-ply step (forward or backward) via `prevPlyRef` — bigger jumps snap.
+- **Check/checkmate detection is `chessRules.checkStatus(fen)`, not a new ad-hoc `chess.js`
+  call site.** `MoveHighlights` renders a pulsing ring on the returned `kingSquare` when
+  `inCheck` — faster and redder when `checkmate` is also true. Keep this in `chessRules.ts`
+  alongside `gameStatus`, not duplicated logic in a component.
 - **All chess rules/PGN/UCI parsing live in `src/lib/chessRules.ts`**, wrapping `chess.js`.
   Nothing else in the codebase should import `chess.js` directly — route through this
   module so there is exactly one seam to test and one place that understands FEN/SAN/UCI.

@@ -226,3 +226,22 @@ export function gameStatus(fen: string): GameStatus {
   if (chess.isStalemate()) return { over: true, reason: "stalemate" };
   return { over: true, reason: "draw" };
 }
+
+export interface CheckStatus {
+  inCheck: boolean;
+  checkmate: boolean;
+  /** The square of the king currently in check, or `null` when not in check. */
+  kingSquare: string | null;
+}
+
+/** Whether the side to move at `fen` is in check (and if so, checkmated), and where their king is. */
+export function checkStatus(fen: string): CheckStatus {
+  const chess = new Chess(fen);
+  const inCheck = chess.isCheck();
+  if (!inCheck) {
+    return { inCheck: false, checkmate: false, kingSquare: null };
+  }
+  const sideInCheck = chess.turn();
+  const king = fenToPieces(fen).find((p) => p.type === "k" && p.color === sideInCheck);
+  return { inCheck: true, checkmate: chess.isCheckmate(), kingSquare: king?.square ?? null };
+}
