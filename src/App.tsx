@@ -1,4 +1,5 @@
 import { BoardScene } from "./components/BoardScene";
+import { EngineControls } from "./components/EngineControls";
 import { GameLoader } from "./components/GameLoader";
 import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
@@ -37,6 +38,7 @@ function App() {
           <PlaybackControls />
         </div>
         <aside className="side-panel">
+          <EngineControls />
           <GameLoader />
           <MoveList />
           <MoveLog />

@@ -2,9 +2,10 @@ import { useLayoutEffect } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { fenToPieces } from "../lib/chessRules";
-import { squareToPosition } from "../lib/boardGeometry";
+import { squareName, squareToPosition } from "../lib/boardGeometry";
 import { Piece } from "./Piece";
-import type { CameraMode } from "../state/gameStore";
+import { MoveHighlights } from "./MoveHighlights";
+import { useGameStore, type CameraMode } from "../state/gameStore";
 import type { ResolvedTheme } from "../state/themeStore";
 
 const LIGHT_SQUARE = "#EDD6B0";
@@ -19,12 +20,17 @@ function BoardSquares() {
   for (let file = 0; file < 8; file++) {
     for (let rank = 0; rank < 8; rank++) {
       const isLight = (file + rank) % 2 === 1;
+      const square = squareName(file, rank);
       squares.push(
         <mesh
-          key={`${file}-${rank}`}
+          key={square}
           position={[file - 3.5, 0, rank - 3.5]}
           rotation={[-Math.PI / 2, 0, 0]}
           receiveShadow
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            useGameStore.getState().selectSquare(square);
+          }}
         >
           <planeGeometry args={[1, 1]} />
           <meshStandardMaterial color={isLight ? LIGHT_SQUARE : DARK_SQUARE} />
@@ -72,12 +78,14 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <LookAtBoardCenter />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
       <BoardSquares />
+      <MoveHighlights />
       {pieces.map((piece) => (
         <Piece
           key={piece.square}
           type={piece.type}
           color={piece.color}
           position={squareToPosition(piece.square)}
+          square={piece.square}
         />
       ))}
     </Canvas>

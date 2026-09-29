@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 import type { PieceOnSquare } from "../lib/chessRules";
+import { useGameStore } from "../state/gameStore";
 
 const WHITE_MATERIAL_COLOR = "#f5f0e6";
 const BLACK_MATERIAL_COLOR = "#2b2b2b";
@@ -39,12 +40,20 @@ interface PieceProps {
   type: PieceOnSquare["type"];
   color: PieceOnSquare["color"];
   position: [number, number];
+  square: string;
 }
 
-export function Piece({ type, color, position }: PieceProps) {
+export function Piece({ type, color, position, square }: PieceProps) {
   const [x, z] = position;
   return (
-    <mesh position={[x, HALF_HEIGHT[type], z]} castShadow>
+    <mesh
+      position={[x, HALF_HEIGHT[type], z]}
+      castShadow
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        useGameStore.getState().selectSquare(square);
+      }}
+    >
       {geometryFor(type)}
       <meshStandardMaterial
         color={color === "w" ? WHITE_MATERIAL_COLOR : BLACK_MATERIAL_COLOR}
