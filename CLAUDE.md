@@ -39,8 +39,22 @@ this file and the human-facing docs.
 - **All chess rules/PGN/UCI parsing live in `src/lib/chessRules.ts`**, wrapping `chess.js`.
   Nothing else in the codebase should import `chess.js` directly — route through this
   module so there is exactly one seam to test and one place that understands FEN/SAN/UCI.
-- **`src-tauri` has zero chess domain logic in M1.** It exists only for OS-level concerns
-  (file dialogs now; engine process spawning is M2). Do not add chess rules to Rust.
+- **`src-tauri` has zero chess/UCI-protocol logic.** `src-tauri/src/engine.rs` spawns the
+  picked binary and pipes raw stdout lines as `engine-stdout` events — it never parses a
+  UCI line. All `bestmove`/`info` parsing and all outgoing `position`/`go` construction
+  live in `src/lib/uci.ts`, the UCI-protocol counterpart to `chessRules.ts`. Do not add
+  parsing logic to `engine.rs`; extend `uci.ts` instead.
+- **No `shell:execute` capability is granted, by design.** The `shell` plugin's model is
+  built for bundled sidecars or a fixed allowlist, not an arbitrary path picked live from a
+  file dialog. `engine_start` spawns directly via `std::process::Command` and validates the
+  path itself (must be a real file) — the native file dialog is the trust boundary here,
+  the same reasoning already applied to the `fs` read scope below. Do not "fix" this by
+  adding a `shell:allow-execute` permission; it doesn't fit this use case.
+- **`gameStore` knows nothing about the engine.** `attemptMove(from, to, promotion?)` is
+  the single append path for both a human's click and an applied engine `bestmove` — it
+  just validates via `chessRules.tryMove` and appends. Turn-taking orchestration
+  (`engineStore.ts`'s `maybeRequestEngineMove`) lives entirely in `engineStore`, which
+  subscribes to `gameStore`; the dependency only ever points one way.
 - **Think-time is derived, not authoritative.** `%emt` comments are used directly when
   present; otherwise think-time is computed by diffing consecutive `%clk` readings for the
   same color plus the `TimeControl` header's increment. A PGN with neither leaves
@@ -51,17 +65,23 @@ this file and the human-facing docs.
 
 ## Testing conventions
 
-- Framework: Vitest. Black-box per the user's testing rules — tests exercise
-  `chessRules.ts`'s exported functions only, never `chess.js` internals.
-- One test file per lib module: `chessRules.test.ts`, `time.test.ts`.
-- No Rust tests yet — `src-tauri` has no domain logic to test until M2.
+- Framework: Vitest. Black-box per the user's testing rules — tests exercise each
+  module's exported functions only, never `chess.js` internals or another module's
+  private state.
+- One test file per lib/state module: `chessRules.test.ts`, `time.test.ts`, `uci.test.ts`,
+  `boardGeometry.test.ts`, `gameStore.test.ts`.
+- Rust: `engine.rs` has a couple of unit tests for the pure state-transition helpers
+  (`write_line_locked`, `stop_locked` with no process running) that don't need a real
+  `AppHandle`. The path-validation and actual-process-lifecycle branches are verified
+  manually against the real `chess-engine` binary instead — see the PR that introduced
+  live play for the exact verification steps.
 
 ## Non-goals (for now)
 
-- Spawning/talking to an engine process (M2)
-- Playing against an engine (M3)
-- GLTF piece models / animations / themes (M4)
+- GLTF piece models / tweened move animations / board themes (visual polish)
+- Surfacing a picked engine's UCI `option` lines as real controls
+- Drag-and-drop move input (click-to-select-then-click-destination is what's built; only
+  revisit this if it turns out to be a real usability problem, not preemptively)
 
-Do not build these speculatively — each is a real milestone with its own design
-questions (process lifecycle + capability scoping for M2 especially) that deserve their
-own planning pass, not a drive-by addition on top of an unrelated change.
+Do not build these speculatively — each is real scope with its own design questions that
+deserve their own planning pass, not a drive-by addition on top of an unrelated change.

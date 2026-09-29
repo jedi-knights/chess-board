@@ -96,6 +96,47 @@ body {
   overflow-y: auto;
 }
 
+.engine-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding-bottom: 1em;
+  border-bottom: 1px solid var(--border);
+}
+
+.engine-controls h2 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.engine-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+}
+
+.engine-field select,
+.engine-field input {
+  color: var(--fg);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3em;
+}
+
+.engine-status {
+  font-family: monospace;
+  color: var(--border);
+  margin: 0;
+}
+
+.hint {
+  color: var(--border);
+  font-style: italic;
+  margin: 0;
+}
+
 .game-loader textarea {
   width: 100%;
   box-sizing: border-box;

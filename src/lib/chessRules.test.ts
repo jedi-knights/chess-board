@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { fenAtPly, fenToPieces, parsePgn, parseUciMoves } from "./chessRules";
+import {
+  fenAtPly,
+  fenToPieces,
+  gameStatus,
+  legalDestinations,
+  parsePgn,
+  parseUciMoves,
+  sideToMove,
+  tryMove,
+} from "./chessRules";
 
 const FOOLS_MATE_PGN = "1. f3 e5 2. g4 Qh4#";
 const FOOLS_MATE_FINAL_FEN =
@@ -11,6 +20,7 @@ describe("parsePgn", () => {
 
     expect(plies).toHaveLength(4);
     expect(plies.map((p) => p.san)).toEqual(["f3", "e5", "g4", "Qh4#"]);
+    expect(plies.map((p) => p.uci)).toEqual(["f2f3", "e7e5", "g2g4", "d8h4"]);
     expect(plies[0].fenBefore).toContain(
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w",
     );
@@ -65,6 +75,19 @@ describe("fenAtPly", () => {
   });
 });
 
+describe("sideToMove", () => {
+  it("reads white to move from the starting position", () => {
+    expect(sideToMove("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")).toBe(
+      "w",
+    );
+  });
+
+  it("reads black to move after white's first move", () => {
+    const plies = parsePgn(FOOLS_MATE_PGN);
+    expect(sideToMove(plies[0].fenAfter)).toBe("b");
+  });
+});
+
 describe("parsePgn clock/think-time parsing", () => {
   const PGN_WITH_CLOCKS =
     '[Event "Test"]\n[TimeControl "180+2"]\n\n' +
@@ -111,5 +134,70 @@ describe("fenToPieces", () => {
     const pieces = fenToPieces(FOOLS_MATE_FINAL_FEN);
     expect(pieces).toContainEqual({ square: "h4", type: "q", color: "b" });
     expect(pieces.some((p) => p.square === "e5" && p.type === "p")).toBe(true);
+  });
+});
+
+const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+describe("legalDestinations", () => {
+  it("returns the knight's starting squares", () => {
+    expect(legalDestinations(START_FEN, "b1").sort()).toEqual(["a3", "c3"]);
+  });
+
+  it("returns an empty list for a square with no piece", () => {
+    expect(legalDestinations(START_FEN, "e4")).toEqual([]);
+  });
+
+  it("returns an empty list for a pinned piece with no legal moves", () => {
+    // White king e1, white rook e2 pinned by black rook e8 along the e-file.
+    const pinnedFen = "4r2k/8/8/8/8/8/4R3/4K3 w - - 0 1";
+    expect(legalDestinations(pinnedFen, "e2")).toEqual([
+      "e3",
+      "e4",
+      "e5",
+      "e6",
+      "e7",
+      "e8",
+    ]);
+  });
+});
+
+describe("tryMove", () => {
+  it("applies a legal move and returns the resulting ply", () => {
+    const ply = tryMove(START_FEN, "e2", "e4");
+    expect(ply).not.toBeNull();
+    expect(ply?.san).toBe("e4");
+    expect(ply?.uci).toBe("e2e4");
+    expect(ply?.color).toBe("w");
+  });
+
+  it("applies a promotion and encodes it in the uci field", () => {
+    const fen = "8/4P3/8/8/8/8/8/4K2k w - - 0 1";
+    const ply = tryMove(fen, "e7", "e8", "q");
+    expect(ply?.san).toBe("e8=Q");
+    expect(ply?.uci).toBe("e7e8q");
+  });
+
+  it("returns null for an illegal move instead of throwing", () => {
+    expect(tryMove(START_FEN, "e2", "e5")).toBeNull();
+  });
+});
+
+describe("gameStatus", () => {
+  it("reports a fresh game as not over", () => {
+    expect(gameStatus(START_FEN)).toEqual({ over: false });
+  });
+
+  it("reports checkmate", () => {
+    expect(gameStatus(FOOLS_MATE_FINAL_FEN)).toEqual({
+      over: true,
+      reason: "checkmate",
+    });
+  });
+
+  it("reports stalemate", () => {
+    // Classic stalemate: black king a8, no black pieces, not in check, no legal moves.
+    const stalemateFen = "k7/8/1Q6/8/8/8/8/7K b - - 0 1";
+    expect(gameStatus(stalemateFen)).toEqual({ over: true, reason: "stalemate" });
   });
 });
