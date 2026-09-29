@@ -140,6 +140,24 @@ this file and the human-facing docs.
 - **`fs` capability is scoped**, not `fs:default`. Only `fs:allow-read-text-file` under
   `$HOME`/`$DOCUMENT`/`$DOWNLOAD`/`$DESKTOP`. Do not widen this without a concrete need.
 - **`security.csp` is set explicitly** in `tauri.conf.json`. Never revert to `null`.
+- **The engine's stderr is captured, not discarded.** `engine.rs` pipes stderr (not
+  `Stdio::null()`) into a bounded 20-line tail (`STDERR_TAIL_LINES`) and includes it in the
+  `engine-exit` payload. Discarding it is exactly what made "engine process exited
+  unexpectedly" useless — the crash diagnostic the engine printed was being thrown away
+  before anyone ever saw it. Do not go back to `Stdio::null()` for stderr.
+- **`debug_log.rs` is a separate, deliberately simple on-disk log** — one file
+  (`<app log dir>/debug.log`), cleared at app launch (`lib.rs`'s `.setup()` hook) and at
+  every "Start game" (`engineStore.startEngine`), so it never grows unbounded across a long
+  session. Rust logs what it directly observes (spawn attempts, exit code + stderr);
+  the frontend logs the semantic events it already has the context for (moves sent/received,
+  every `failEngine` call). Existing for one reason: giving a human or Claude enough of a
+  timeline to debug a crash after the fact without needing to have had DevTools open at the
+  time. Don't log every `info` line here — that's high-volume, low-diagnostic-value noise;
+  log decisions and failures, not routine search chatter.
+- **`stopEngine` clears `errorMessage`.** Before this, clicking Stop left a stale crash
+  message on screen with no way to dismiss it short of restarting the app. Any future
+  "terminal" transition (a new manual action that fully resets engine state) should clear
+  `errorMessage` too, for the same reason.
 
 ## Testing conventions
 
@@ -147,9 +165,11 @@ this file and the human-facing docs.
   module's exported functions only, never `chess.js` internals or another module's
   private state.
 - One test file per lib/state module: `chessRules.test.ts`, `time.test.ts`, `uci.test.ts`,
-  `boardGeometry.test.ts`, `gameStore.test.ts`, `engineIdentifier.test.ts`.
-- Rust: `engine.rs` has a couple of unit tests for the pure state-transition helpers
-  (`write_line_locked`, `stop_locked` with no process running) that don't need a real
+  `boardGeometry.test.ts`, `gameStore.test.ts`, `engineIdentifier.test.ts`,
+  `boardPalettes.test.ts`, `engineStore.test.ts` (just the one pure function it exports,
+  `formatEngineExitMessage` — the rest of that module is Tauri-invoke orchestration).
+- Rust: `engine.rs` has unit tests for the pure state-transition helpers (`write_line_locked`,
+  `stop_locked` with no process running, the `stderr_tail` cap) that don't need a real
   `AppHandle`. The path-validation and actual-process-lifecycle branches are verified
   manually against the real `chess-engine` binary instead — see the PR that introduced
   live play for the exact verification steps.

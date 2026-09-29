@@ -10,12 +10,21 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+
+/// How many of the engine's most recent stderr lines to keep around for a
+/// crash report. Bounded so a chatty/misbehaving engine can't grow this
+/// without limit -- a genuine crash diagnostic is a handful of lines, not
+/// thousands.
+const STDERR_TAIL_LINES: usize = 20;
 
 #[derive(Default)]
 pub struct EngineState {
     child: Option<Child>,
     reader_handle: Option<JoinHandle<()>>,
+    stderr_handle: Option<JoinHandle<()>>,
+    stderr_tail: Vec<String>,
 }
 
 pub type SharedEngineState = Arc<Mutex<EngineState>>;
@@ -24,17 +33,35 @@ pub fn new_shared_state() -> SharedEngineState {
     Arc::new(Mutex::new(EngineState::default()))
 }
 
+#[derive(Serialize, Clone)]
+pub struct EngineExitPayload {
+    code: Option<i32>,
+    /// The engine's most recent stderr output, if it printed anything
+    /// before exiting -- often the only clue a crash left behind (an
+    /// assertion message, a missing-file error, a segfault handler line).
+    stderr: String,
+}
+
 fn lock(state: &SharedEngineState) -> Result<MutexGuard<'_, EngineState>, String> {
     state.lock().map_err(|_| "engine state lock poisoned".to_string())
 }
 
+fn push_stderr_line(state: &SharedEngineState, line: String) {
+    let Ok(mut guard) = lock(state) else { return };
+    guard.stderr_tail.push(line);
+    if guard.stderr_tail.len() > STDERR_TAIL_LINES {
+        let excess = guard.stderr_tail.len() - STDERR_TAIL_LINES;
+        guard.stderr_tail.drain(0..excess);
+    }
+}
+
 /// Stops whatever engine is currently running, if any. Safe to call when no
-/// engine is running (a no-op). Blocks until the reader thread has fully
+/// engine is running (a no-op). Blocks until both reader threads have fully
 /// exited, so callers never leak a thread or an unreaped child process.
 fn stop_locked(state: &SharedEngineState) -> Result<(), String> {
-    let (mut child, reader_handle) = {
+    let (mut child, reader_handle, stderr_handle) = {
         let mut guard = lock(state)?;
-        (guard.child.take(), guard.reader_handle.take())
+        (guard.child.take(), guard.reader_handle.take(), guard.stderr_handle.take())
     };
 
     if let Some(child) = child.as_mut() {
@@ -51,6 +78,9 @@ fn stop_locked(state: &SharedEngineState) -> Result<(), String> {
     if let Some(handle) = reader_handle {
         let _ = handle.join();
     }
+    if let Some(handle) = stderr_handle {
+        let _ = handle.join();
+    }
 
     Ok(())
 }
@@ -64,17 +94,43 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
     // Never leak a previous process if the user picks a new engine mid-run.
     stop_locked(&state)?;
 
+    let _ = crate::debug_log::append(&app, &format!("engine_start: path={path}"));
+
     let mut child = Command::new(engine_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("failed to spawn engine at {path}: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("failed to spawn engine at {path}: {e}");
+            let _ = crate::debug_log::append(&app, &msg);
+            msg
+        })?;
 
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "spawned engine process has no stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "spawned engine process has no stderr".to_string())?;
+
+    {
+        let mut guard = lock(&state)?;
+        guard.stderr_tail.clear();
+    }
+
+    let stderr_state = state.clone();
+    let stderr_handle = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(text) => push_stderr_line(&stderr_state, text),
+                Err(_) => break,
+            }
+        }
+    });
 
     let reader_state = state.clone();
     let reader_app = app.clone();
@@ -91,16 +147,28 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
         // stdout closed: the process exited (or we killed it). try_wait is
         // non-blocking -- if the child hasn't fully reaped yet this reports
         // no code rather than blocking the reader thread indefinitely.
-        let exit_code = lock(&reader_state)
-            .ok()
-            .and_then(|mut guard| guard.child.as_mut()?.try_wait().ok().flatten())
-            .and_then(|status| status.code());
-        let _ = reader_app.emit("engine-exit", exit_code);
+        let (code, stderr) = match lock(&reader_state) {
+            Ok(mut guard) => {
+                let code = guard
+                    .child
+                    .as_mut()
+                    .and_then(|c| c.try_wait().ok().flatten())
+                    .and_then(|status| status.code());
+                (code, guard.stderr_tail.join("\n"))
+            }
+            Err(_) => (None, String::new()),
+        };
+        let _ = crate::debug_log::append(
+            &reader_app,
+            &format!("engine exited: code={code:?} stderr={stderr:?}"),
+        );
+        let _ = reader_app.emit("engine-exit", EngineExitPayload { code, stderr });
     });
 
     let mut guard = lock(&state)?;
     guard.child = Some(child);
     guard.reader_handle = Some(reader_handle);
+    guard.stderr_handle = Some(stderr_handle);
     Ok(())
 }
 
@@ -156,5 +224,18 @@ mod tests {
     fn stop_is_a_safe_no_op_with_no_engine_running() {
         let state = new_shared_state();
         assert!(stop_locked(&state).is_ok());
+    }
+
+    #[test]
+    fn stderr_tail_is_capped() {
+        let state = new_shared_state();
+        for i in 0..(STDERR_TAIL_LINES + 10) {
+            push_stderr_line(&state, format!("line {i}"));
+        }
+        let guard = lock(&state).unwrap();
+        assert_eq!(guard.stderr_tail.len(), STDERR_TAIL_LINES);
+        // Oldest lines are dropped first -- the most recent ones survive.
+        assert_eq!(guard.stderr_tail.first().unwrap(), "line 10");
+        assert_eq!(guard.stderr_tail.last().unwrap(), "line 29");
     }
 }

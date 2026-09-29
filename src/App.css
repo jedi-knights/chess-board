@@ -214,6 +214,9 @@ body {
 
 .load-error {
   color: #d9534f;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 0.9em;
 }
 
 .move-list {

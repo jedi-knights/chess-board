@@ -17,6 +17,28 @@ import { useGameStore } from "./gameStore";
 
 export type EngineStatus = "idle" | "starting" | "ready" | "thinking" | "error" | "crashed";
 
+export interface EngineExitPayload {
+  code: number | null;
+  /** The engine's most recent stderr output before it exited, if any. */
+  stderr: string;
+}
+
+/** Builds the user-facing message for an `engine-exit` event, including
+ * whatever stderr the engine printed -- without it, "exited unexpectedly"
+ * gives no context at all, which was the whole complaint this fixes. */
+export function formatEngineExitMessage(payload: EngineExitPayload): string {
+  const codePart =
+    payload.code !== null ? `engine process exited (code ${payload.code})` : "engine process exited unexpectedly";
+  const stderrPart = payload.stderr.trim();
+  return stderrPart ? `${codePart}\n${stderrPart}` : codePart;
+}
+
+/** Fire-and-forget append to the on-disk debug log -- a logging failure
+ * must never cascade into a user-visible error of its own. */
+function logDebug(message: string) {
+  invoke("debug_log_append", { message }).catch(() => {});
+}
+
 interface EngineStoreState {
   /** Selected engine path -- persisted across sessions, independent of status. */
   path: string | null;
@@ -58,8 +80,12 @@ function maybeRequestEngineMove() {
 
   useEngineStore.setState({ status: "thinking", searchInfoHistory: [], lastInfo: null });
   const moves = game.plies.map((p) => p.uci);
-  invoke("engine_write_line", { line: buildPositionCommand(moves) })
-    .then(() => invoke("engine_write_line", { line: buildGoCommand(engine.movetimeMs) }))
+  const positionCmd = buildPositionCommand(moves);
+  const goCmd = buildGoCommand(engine.movetimeMs);
+  logDebug(`sending: ${positionCmd}`);
+  logDebug(`sending: ${goCmd}`);
+  invoke("engine_write_line", { line: positionCmd })
+    .then(() => invoke("engine_write_line", { line: goCmd }))
     .catch((err) => failEngine("error", String(err)));
 }
 
@@ -71,11 +97,13 @@ function maybeRequestEngineMove() {
  * behind it, letting a human move both sides with nothing checking them).
  */
 function failEngine(status: "error" | "crashed", message: string) {
+  logDebug(`FAILED (${status}): ${message}`);
   useEngineStore.setState({ status, errorMessage: message });
   useGameStore.getState().exitPlayMode();
 }
 
 function applyEngineBestMove(move: string) {
+  logDebug(`received bestmove: ${move}`);
   const from = move.slice(0, 2);
   const to = move.slice(2, 4);
   const promotion = move.length > 4 ? move.slice(4, 5) : undefined;
@@ -114,13 +142,8 @@ function installListenersOnce() {
     }
   });
 
-  void listen<number | null>("engine-exit", (event) => {
-    failEngine(
-      "crashed",
-      event.payload !== null
-        ? `engine process exited (code ${event.payload})`
-        : "engine process exited unexpectedly",
-    );
+  void listen<EngineExitPayload>("engine-exit", (event) => {
+    failEngine("crashed", formatEngineExitMessage(event.payload));
   });
 
   useGameStore.subscribe((state, prevState) => {
@@ -164,6 +187,10 @@ export const useEngineStore = create<EngineStoreState>()(
         if (!NOT_RUNNING.has(get().status)) return;
 
         installListenersOnce();
+        // A fresh debug log per game, per the mandate that it must never
+        // grow unbounded across a long session -- app launch clears it too
+        // (see src-tauri/src/lib.rs's .setup() hook), this covers "new game".
+        invoke("debug_log_clear").catch(() => {});
         set({
           status: "starting",
           path,
@@ -173,6 +200,7 @@ export const useEngineStore = create<EngineStoreState>()(
           options: [],
           optionValues: {},
         });
+        logDebug(`starting engine: ${path}`);
         try {
           await invoke("engine_start", { path });
           // Triggers the id/option/uciok handshake burst so `options`
@@ -181,6 +209,7 @@ export const useEngineStore = create<EngineStoreState>()(
           // change the ready/turn-orchestration timing at all.
           void invoke("engine_write_line", { line: "uci" });
           set({ status: "ready" });
+          logDebug("engine ready");
           // Only unlock moves once the engine has actually confirmed it
           // started -- gameStore.startNewGame (called before this) resets
           // the board but deliberately leaves moves locked until now.
@@ -192,10 +221,15 @@ export const useEngineStore = create<EngineStoreState>()(
       },
 
       stopEngine: async () => {
+        logDebug("stop requested");
         try {
           await invoke("engine_stop");
         } finally {
-          set({ status: "idle", lastInfo: null, searchInfoHistory: [] });
+          // Clearing errorMessage here is what makes "Stop" actually
+          // dismiss a displayed crash/error -- previously it didn't, so a
+          // stale "engine process exited unexpectedly" stuck around with
+          // no way to clear it short of restarting the whole app.
+          set({ status: "idle", lastInfo: null, searchInfoHistory: [], errorMessage: null });
           useGameStore.getState().exitPlayMode();
         }
       },

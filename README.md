@@ -46,6 +46,7 @@ Or:     point chess-board at your engine binary, choose a side, and
 - **Move log transcript** with a live wall clock and, when the source PGN carries lichess/chess.com-style `%clk` or ICC-style `%emt` annotations, how long each side took on each move.
 - **Play a live game against any UCI engine** — choose an engine binary, pick a side, click a piece to see its legal destinations highlighted, click one to move. The engine replies automatically; no manual UCI typing.
 - **Remembers your last engine** across restarts, and labels it with a GitHub-style `owner/repo` identifier (e.g. `jedi-knights/chess-engine`) instead of a raw file path — the label also makes clear whether that engine is just selected or actually running.
+- **Crash messages include the engine's own stderr output**, not just "exited unexpectedly" — and clicking **Stop** actually dismisses a displayed error instead of leaving it stuck.
 - **Search history panel** — every `info` line from the engine's current search (one per completed depth), not just the latest, so you can see how a search actually converged.
 - **Engine option controls** — whatever `option` lines an engine advertises after the UCI handshake (checkboxes, spin/combo/string fields, buttons) render as real controls instead of being silently ignored.
 - **Light / dark theme** — follows the OS by default, with a manual override that persists across restarts.
@@ -120,6 +121,7 @@ No environment variables or config files. Two things worth knowing about what th
 | Content-Security-Policy | Set explicitly in `src-tauri/tauri.conf.json` (`default-src 'self'`, no remote script/style sources) | The webview can't load arbitrary remote content |
 | File-read scope | `src-tauri/capabilities/default.json` grants read access only under `$HOME`, `$DOCUMENT`, `$DOWNLOAD`, `$DESKTOP` — not the whole filesystem | The "Open PGN file…" dialog can only read files under your common user directories |
 | Engine process spawning | **No** `shell:execute` capability is granted. `engine_start` (`src-tauri/src/engine.rs`) spawns the picked binary directly via `std::process::Command`, after checking the path is a real file | The engine path is arbitrary and chosen at runtime through the same native file dialog used for opening PGNs — that dialog is the trust boundary, not a pre-declared shell allowlist (which the `shell` plugin's capability model isn't built for anyway) |
+| Debug log | A plain-text `debug.log` in your OS's app log directory (e.g. `~/Library/Logs/com.jediknights.chessboard/debug.log` on macOS) — engine spawn/exit events (including captured stderr) from Rust, plus move/failure events from the frontend | Gives enough of a timeline to debug a crash after the fact, without needing DevTools open at the time. Cleared on every app launch and every "Start game" click, so it never grows across a long session |
 
 ## Development
 
