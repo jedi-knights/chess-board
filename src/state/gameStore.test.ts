@@ -2,18 +2,51 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useGameStore } from "./gameStore";
 
 beforeEach(() => {
+  // startNewGame alone leaves moves locked (mode stays "replay") -- see
+  // enterPlayMode's own tests below. Most tests in this file want to
+  // simulate an actually-started game (engine confirmed, moves allowed),
+  // so they need both calls.
   useGameStore.getState().startNewGame("w");
+  useGameStore.getState().enterPlayMode();
 });
 
 describe("startNewGame", () => {
-  it("resets to an empty game in play mode with the chosen human color", () => {
+  it("resets to an empty game with the chosen human color, but leaves moves locked", () => {
     useGameStore.getState().startNewGame("b");
     const state = useGameStore.getState();
-    expect(state.mode).toBe("play");
+    expect(state.mode).toBe("replay");
     expect(state.humanColor).toBe("b");
     expect(state.plies).toEqual([]);
     expect(state.ply).toBe(0);
     expect(state.selectedSquare).toBeNull();
+  });
+
+  it("does not allow moves until enterPlayMode is also called", () => {
+    useGameStore.getState().startNewGame("w");
+    useGameStore.getState().selectSquare("e2");
+    expect(useGameStore.getState().selectedSquare).toBeNull();
+  });
+});
+
+describe("enterPlayMode / exitPlayMode", () => {
+  it("enterPlayMode unlocks moves", () => {
+    useGameStore.getState().startNewGame("w");
+    useGameStore.getState().enterPlayMode();
+    useGameStore.getState().selectSquare("e2");
+    expect(useGameStore.getState().selectedSquare).toBe("e2");
+  });
+
+  it("exitPlayMode locks moves again and clears any pending selection", () => {
+    useGameStore.getState().selectSquare("e2");
+    expect(useGameStore.getState().selectedSquare).toBe("e2");
+
+    useGameStore.getState().exitPlayMode();
+    const state = useGameStore.getState();
+    expect(state.mode).toBe("replay");
+    expect(state.selectedSquare).toBeNull();
+
+    useGameStore.getState().selectSquare("e2");
+    expect(useGameStore.getState().selectedSquare).toBeNull();
   });
 });
 
