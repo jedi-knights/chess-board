@@ -127,7 +127,7 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <LookAtBoardCenter cameraMode={cameraMode} humanColor={humanColor} />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
       <BoardSquares palette={palette} />
-      <MoveHighlights />
+      <MoveHighlights fen={fen} />
       {pieces.map((piece) => (
         <Piece
           key={piece.square}

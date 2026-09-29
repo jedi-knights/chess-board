@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkStatus,
   fenAtPly,
   fenToPieces,
   gameStatus,
@@ -199,5 +200,34 @@ describe("gameStatus", () => {
     // Classic stalemate: black king a8, no black pieces, not in check, no legal moves.
     const stalemateFen = "k7/8/1Q6/8/8/8/8/7K b - - 0 1";
     expect(gameStatus(stalemateFen)).toEqual({ over: true, reason: "stalemate" });
+  });
+});
+
+describe("checkStatus", () => {
+  it("reports not in check for a fresh position", () => {
+    expect(checkStatus(START_FEN)).toEqual({
+      inCheck: false,
+      checkmate: false,
+      kingSquare: null,
+    });
+  });
+
+  it("reports check (not checkmate) and the checked king's square", () => {
+    // Black rook on e2 checks the white king on e1 along the e-file; the
+    // king has legal escapes (d1, f1, d2, f2) or can capture the rook.
+    const checkFen = "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1";
+    expect(checkStatus(checkFen)).toEqual({
+      inCheck: true,
+      checkmate: false,
+      kingSquare: "e1",
+    });
+  });
+
+  it("reports checkmate and the mated king's square", () => {
+    expect(checkStatus(FOOLS_MATE_FINAL_FEN)).toEqual({
+      inCheck: true,
+      checkmate: true,
+      kingSquare: "e1",
+    });
   });
 });
