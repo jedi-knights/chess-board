@@ -123,6 +123,25 @@ fn validate_uci_move(mv: &str) -> Result<(), String> {
     }
 }
 
+/// Validates a Lichess username before it's spliced into a request URL --
+/// same trust-boundary reasoning as `parse_game_id`/`validate_uci_move`.
+/// Lichess usernames are 2-30 characters, start with a letter, and contain
+/// only letters/digits/`_`/`-`.
+fn validate_username(name: &str) -> Result<(), String> {
+    let len_ok = (2..=30).contains(&name.chars().count());
+    let starts_with_letter = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+    let chars_ok = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if len_ok && starts_with_letter && chars_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "\"{name}\" doesn't look like a valid Lichess username"
+        ))
+    }
+}
+
 /// Fetches the PGN for a public game. No auth -- `/game/export/{id}` is a
 /// public endpoint for any game that isn't private. Fails closed: a
 /// non-success status or empty body is an `Err`, never a silently blank PGN.
@@ -450,6 +469,81 @@ pub async fn lichess_bot_upgrade() -> Result<(), String> {
     Ok(())
 }
 
+/// Caps how many online bots a single `lichess_bot_online` call can ask
+/// for -- bounded regardless of what the caller passes, per the
+/// "every loop/request over external-shaped input needs a named cap" rule.
+/// Lichess enforces its own ceiling server-side too; this is this app's
+/// own independent bound, not a guess at theirs.
+const MAX_BOTS_LISTED: u32 = 200;
+
+/// Lists currently-online Bot accounts. Public endpoint, no auth needed --
+/// same as `export_pgn`, this hands the raw NDJSON body straight back
+/// rather than parsing it; `src/lib/lichess.ts`'s `parseBotOnlineList` is
+/// the one seam that understands the shape of each line.
+#[tauri::command]
+pub async fn lichess_bot_online(nb: Option<u32>) -> Result<String, String> {
+    let limit = nb.unwrap_or(50).min(MAX_BOTS_LISTED);
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/bot/online?nb={limit}");
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("lichess returned {status} listing online bots"));
+    }
+    response
+        .text()
+        .await
+        .map_err(|e| format!("failed to read lichess response: {e}"))
+}
+
+/// Challenges a bot account to a real-time game. Always unrated -- this is
+/// for testing an engine, not chasing a rating, and keeping it non-
+/// configurable here avoids a second surface (a rated toggle) for a
+/// consequence (permanently affecting someone's rating) this tool has no
+/// business opting a user into by default.
+#[tauri::command]
+pub async fn lichess_challenge_bot(
+    username: String,
+    clock_limit_seconds: u32,
+    clock_increment_seconds: u32,
+    color: String,
+) -> Result<(), String> {
+    validate_username(&username)?;
+    if !matches!(color.as_str(), "random" | "white" | "black") {
+        return Err(format!("\"{color}\" is not a valid color"));
+    }
+    let token = token()?;
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/challenge/{username}");
+    let response = client
+        .post(&url)
+        .bearer_auth(&token)
+        .form(&[
+            ("rated", "false"),
+            ("clock.limit", &clock_limit_seconds.to_string()),
+            ("clock.increment", &clock_increment_seconds.to_string()),
+            ("color", &color),
+            ("variant", "standard"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "lichess rejected the challenge to {username}: {status} {body}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,5 +645,33 @@ mod tests {
     fn stopping_a_stream_with_none_running_is_a_safe_no_op() {
         let state = new_shared_lichess_state();
         assert!(stop_stream_locked(&state).is_ok());
+    }
+
+    #[test]
+    fn accepts_a_typical_username() {
+        assert!(validate_username("maia1").is_ok());
+        assert!(validate_username("Some_Bot-9").is_ok());
+    }
+
+    #[test]
+    fn rejects_a_username_that_is_too_short() {
+        assert!(validate_username("a").is_err());
+    }
+
+    #[test]
+    fn rejects_a_username_that_is_too_long() {
+        assert!(validate_username(&"a".repeat(31)).is_err());
+    }
+
+    #[test]
+    fn rejects_a_username_not_starting_with_a_letter() {
+        assert!(validate_username("1bot").is_err());
+        assert!(validate_username("_bot").is_err());
+    }
+
+    #[test]
+    fn rejects_an_injection_attempt_disguised_as_a_username() {
+        assert!(validate_username("bot/../../etc").is_err());
+        assert!(validate_username("bot; rm -rf").is_err());
     }
 }
