@@ -27,6 +27,28 @@ though `main` currently has no branch-protection ruleset configured — the rule
 open a PR," not "open a PR because the branch is protected." If you find yourself with
 staged changes and `main` checked out, stop and move them to a branch before committing.
 
+## Hard requirements (not negotiable, not "later polish")
+
+- **Chess pieces must be visually recognizable as their actual piece type.** A single bare
+  primitive per piece (one cone, one box) is explicitly **not acceptable** — this shipped
+  once, the user called it out directly ("don't look anything like the pieces they should
+  represent"), and it must not regress. The current bar, set in `Piece.tsx`: each piece is
+  a small stack/composition of primitives shaped to its real silhouette (pawn: peg + ball;
+  rook: crenellated turret; knight: an actual extruded horse-head profile, not two rotated
+  boxes; bishop: tall and slender with a pointed mitre, clearly distinct from the pawn;
+  queen: crown with spikes; king: cross topper). GLTF piece models are still optional
+  further polish (see Non-goals) — but the current composed-primitive shapes are the
+  **floor**, not a placeholder waiting to be simplified back down. Do not "clean up"
+  `Piece.tsx` by collapsing a piece back to one primitive.
+- **Never leave the working tree checked out on `main` (or any branch) that lacks a
+  change the user is actively looking at in a running `pnpm tauri dev` session.** Vite
+  watches the filesystem, not git — switching branches while the dev server is running
+  changes what's rendered live, even with zero new edits. This caused a real regression:
+  checking out `main` to clean up after opening PRs reverted `Piece.tsx` to its
+  pre-improvement state on disk, and the user saw the primitive placeholder pieces come
+  back. If a dev server is running against work that only exists on an unmerged branch,
+  either keep that branch checked out, or merge it first, before switching away.
+
 ## Layout
 
 See README.md's Development > Layout section — kept in one place to avoid drift between
