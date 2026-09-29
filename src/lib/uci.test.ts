@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildGoCommand, buildPositionCommand, parseUciLine } from "./uci";
+import {
+  appendSearchInfo,
+  buildGoCommand,
+  buildPositionCommand,
+  buildSetOptionCommand,
+  parseUciLine,
+  upsertOption,
+  type UciInfo,
+  type UciOption,
+} from "./uci";
 
 describe("parseUciLine", () => {
   it("parses bestmove without ponder", () => {
@@ -52,6 +61,75 @@ describe("parseUciLine", () => {
     expect(parsed).toMatchObject({ type: "info", scoreMate: 3, scoreCp: undefined });
   });
 
+  it("parses chess-engine's actual check-type option line", () => {
+    expect(parseUciLine("option name UseNNUE type check default false")).toEqual({
+      type: "option",
+      name: "UseNNUE",
+      optionType: "check",
+      default: "false",
+      min: undefined,
+      max: undefined,
+      vars: undefined,
+    });
+  });
+
+  it("parses chess-engine's actual string-type option line", () => {
+    expect(parseUciLine("option name EvalFile type string default <empty>")).toEqual({
+      type: "option",
+      name: "EvalFile",
+      optionType: "string",
+      default: "<empty>",
+      min: undefined,
+      max: undefined,
+      vars: undefined,
+    });
+  });
+
+  it("parses a spin-type option with min/max", () => {
+    expect(parseUciLine("option name Threads type spin default 1 min 1 max 512")).toEqual({
+      type: "option",
+      name: "Threads",
+      optionType: "spin",
+      default: "1",
+      min: 1,
+      max: 512,
+      vars: undefined,
+    });
+  });
+
+  it("parses a combo-type option with repeated var entries", () => {
+    expect(
+      parseUciLine("option name Style type combo default Normal var Solid var Normal var Risky"),
+    ).toEqual({
+      type: "option",
+      name: "Style",
+      optionType: "combo",
+      default: "Normal",
+      min: undefined,
+      max: undefined,
+      vars: ["Solid", "Normal", "Risky"],
+    });
+  });
+
+  it("parses a button-type option with no default", () => {
+    expect(parseUciLine("option name Clear Hash type button")).toEqual({
+      type: "option",
+      name: "Clear Hash",
+      optionType: "button",
+      default: undefined,
+      min: undefined,
+      max: undefined,
+      vars: undefined,
+    });
+  });
+
+  it("falls back to unknown for a malformed option line instead of throwing", () => {
+    expect(parseUciLine("option type check")).toEqual({
+      type: "unknown",
+      raw: "option type check",
+    });
+  });
+
   it("falls back to unknown for unrecognized/vendor chatter instead of throwing", () => {
     expect(parseUciLine("info string EvalFile loaded: nets/default.jnn1")).toEqual({
       type: "info",
@@ -85,5 +163,64 @@ describe("buildPositionCommand", () => {
 describe("buildGoCommand", () => {
   it("builds a movetime command", () => {
     expect(buildGoCommand(1000)).toBe("go movetime 1000");
+  });
+});
+
+describe("buildSetOptionCommand", () => {
+  it("builds a setoption command with a value", () => {
+    expect(buildSetOptionCommand("UseNNUE", "true")).toBe(
+      "setoption name UseNNUE value true",
+    );
+  });
+
+  it("builds a valueless setoption command for a button-type option", () => {
+    expect(buildSetOptionCommand("Clear Hash")).toBe("setoption name Clear Hash");
+  });
+});
+
+describe("appendSearchInfo", () => {
+  const info = (depth: number): UciInfo => ({ type: "info", depth });
+
+  it("appends to an empty history", () => {
+    expect(appendSearchInfo([], info(1))).toEqual([info(1)]);
+  });
+
+  it("appends onto existing history in order", () => {
+    expect(appendSearchInfo([info(1)], info(2))).toEqual([info(1), info(2)]);
+  });
+
+  it("caps history length so a misbehaving engine can't grow it unbounded", () => {
+    let history: UciInfo[] = [];
+    for (let depth = 1; depth <= 100; depth++) {
+      history = appendSearchInfo(history, info(depth));
+    }
+    expect(history).toHaveLength(64);
+    // Oldest entries are dropped first -- the most recent depths survive.
+    expect(history[0].depth).toBe(37);
+    expect(history[63].depth).toBe(100);
+  });
+});
+
+describe("upsertOption", () => {
+  const option = (name: string, def: string): UciOption => ({
+    type: "option",
+    name,
+    optionType: "check",
+    default: def,
+    min: undefined,
+    max: undefined,
+    vars: undefined,
+  });
+
+  it("adds a new option by name", () => {
+    expect(upsertOption([], option("UseNNUE", "false"))).toEqual([
+      option("UseNNUE", "false"),
+    ]);
+  });
+
+  it("replaces an existing option with the same name instead of duplicating it", () => {
+    const initial = [option("UseNNUE", "false"), option("EvalFile", "<empty>")];
+    const updated = upsertOption(initial, option("UseNNUE", "true"));
+    expect(updated).toEqual([option("UseNNUE", "true"), option("EvalFile", "<empty>")]);
   });
 });

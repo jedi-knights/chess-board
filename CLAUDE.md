@@ -74,7 +74,20 @@ this file and the human-facing docs.
   picked binary and pipes raw stdout lines as `engine-stdout` events — it never parses a
   UCI line. All `bestmove`/`info` parsing and all outgoing `position`/`go` construction
   live in `src/lib/uci.ts`, the UCI-protocol counterpart to `chessRules.ts`. Do not add
-  parsing logic to `engine.rs`; extend `uci.ts` instead.
+  parsing logic to `engine.rs`; extend `uci.ts` instead. `option` lines (`UciOption`) and
+  the bounded per-search `info` history (`appendSearchInfo`, capped at 64 — see
+  algorithmic-complexity guidance) live in the same file, same reasoning.
+- **`startEngine` sends `uci` right after `engine_start` succeeds, fire-and-forget.** This
+  is what makes the engine emit its `id`/`option`/`uciok` burst so `EngineOptions` has
+  something to render. It does **not** gate on `uciok` before `maybeRequestEngineMove` —
+  the existing position/go turn flow already works without that handshake completing, and
+  changing that timing risks re-breaking the race fixed above. If a future engine genuinely
+  needs `uciok` before accepting `position`, address that narrowly, not by blocking on it
+  globally.
+- **`setOption` on a `string`-type control commits on blur, not per-keystroke** — an
+  `EvalFile`-style option is often a path, and sending `setoption` on every character would
+  spam the engine's stdin with mostly-invalid intermediate values. `check`/`spin`/`combo`
+  commit immediately since those are discrete events, not text input.
 - **No `shell:execute` capability is granted, by design.** The `shell` plugin's model is
   built for bundled sidecars or a fixed allowlist, not an arbitrary path picked live from a
   file dialog. `engine_start` spawns directly via `std::process::Command` and validates the
@@ -127,7 +140,6 @@ this file and the human-facing docs.
 ## Non-goals (for now)
 
 - GLTF piece models / tweened move animations / board themes (visual polish)
-- Surfacing a picked engine's UCI `option` lines as real controls
 - Drag-and-drop move input (click-to-select-then-click-destination is what's built; only
   revisit this if it turns out to be a real usability problem, not preemptively)
 
