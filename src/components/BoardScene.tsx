@@ -3,19 +3,19 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { fenToPieces } from "../lib/chessRules";
 import { squareName, squareToPosition } from "../lib/boardGeometry";
+import { getBoardPalette, type BoardPalette } from "../lib/boardPalettes";
 import { Piece } from "./Piece";
 import { MoveHighlights } from "./MoveHighlights";
+import { useBoardThemeStore } from "../state/boardThemeStore";
 import { useGameStore, type CameraMode } from "../state/gameStore";
 import type { ResolvedTheme } from "../state/themeStore";
 
-const LIGHT_SQUARE = "#EDD6B0";
-const DARK_SQUARE = "#8B5A2B";
 const SCENE_BACKGROUND: Record<ResolvedTheme, string> = {
   light: "#dfe3e8",
   dark: "#15171c",
 };
 
-function BoardSquares() {
+function BoardSquares({ palette }: { palette: BoardPalette }) {
   const squares = [];
   for (let file = 0; file < 8; file++) {
     for (let rank = 0; rank < 8; rank++) {
@@ -33,7 +33,7 @@ function BoardSquares() {
           }}
         >
           <planeGeometry args={[1, 1]} />
-          <meshStandardMaterial color={isLight ? LIGHT_SQUARE : DARK_SQUARE} />
+          <meshStandardMaterial color={isLight ? palette.light : palette.dark} />
         </mesh>,
       );
     }
@@ -80,6 +80,7 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
   const humanColor = useGameStore((s) => s.humanColor);
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
+  const palette = getBoardPalette(useBoardThemeStore((s) => s.palette));
 
   // Animate exactly one square's worth of movement: a single step forward
   // (human/engine move, autoplay tick, or the ">" button) or backward (the
@@ -125,7 +126,7 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
       <LookAtBoardCenter cameraMode={cameraMode} humanColor={humanColor} />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
-      <BoardSquares />
+      <BoardSquares palette={palette} />
       <MoveHighlights />
       {pieces.map((piece) => (
         <Piece
