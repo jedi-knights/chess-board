@@ -1,25 +1,58 @@
-import { useMemo, type JSX } from "react";
-import { Shape } from "three";
+import { useLayoutEffect, useMemo, useRef, type JSX } from "react";
+import { useFrame } from "@react-three/fiber";
+import { Group, Shape } from "three";
 import type { PieceOnSquare } from "../lib/chessRules";
 import { useGameStore } from "../state/gameStore";
 
 const WHITE_MATERIAL_COLOR = "#f5f0e6";
 const BLACK_MATERIAL_COLOR = "#2b2b2b";
+const MOVE_ANIMATION_MS = 220;
 
 interface PieceProps {
   type: PieceOnSquare["type"];
   color: PieceOnSquare["color"];
   position: [number, number];
   square: string;
+  /**
+   * World [x, z] this piece should slide in from, if it just arrived here
+   * via a move. A piece's React key is its current square, so the piece
+   * that just moved always mounts fresh (its key changed) -- there is no
+   * "previous instance" to animate from prop changes on. This is why the
+   * slide is driven entirely at mount time, not by reacting to `position`
+   * changing on an already-mounted instance (which, for this component,
+   * never actually happens for a piece that moved).
+   */
+  animateFrom?: [number, number];
 }
 
-export function Piece({ type, color, position, square }: PieceProps) {
-  const [x, z] = position;
+export function Piece({ type, color, position, square, animateFrom }: PieceProps) {
+  const groupRef = useRef<Group>(null);
+  const animStartTime = useRef(0);
   const materialColor = color === "w" ? WHITE_MATERIAL_COLOR : BLACK_MATERIAL_COLOR;
+
+  useLayoutEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    if (animateFrom) {
+      group.position.set(animateFrom[0], 0, animateFrom[1]);
+      animStartTime.current = performance.now();
+    } else {
+      group.position.set(position[0], 0, position[1]);
+    }
+    // Empty deps is deliberate: mount-time only, see the doc comment above.
+  }, []);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group || !animateFrom) return;
+    const t = Math.min(1, (performance.now() - animStartTime.current) / MOVE_ANIMATION_MS);
+    group.position.x = animateFrom[0] + (position[0] - animateFrom[0]) * t;
+    group.position.z = animateFrom[1] + (position[1] - animateFrom[1]) * t;
+  });
 
   return (
     <group
-      position={[x, 0, z]}
+      ref={groupRef}
       onPointerDown={(e) => {
         e.stopPropagation();
         useGameStore.getState().selectSquare(square);

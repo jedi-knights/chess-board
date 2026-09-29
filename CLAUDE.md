@@ -67,6 +67,14 @@ this file and the human-facing docs.
   disambiguation — the explicit horizontal `up` set in `LookAtBoardCenter` is what actually
   decides orientation there, not camera position. Do not "fix" orientation by flipping
   `squareToPosition`'s sign — that would desync rendering from every move-legality check.
+- **Move animation is driven at mount time, not by reacting to prop changes.** A `Piece`'s
+  React key is its current square, so the piece that just moved always mounts fresh (its
+  key changed) — there is no persisted component instance to animate a `position` prop
+  change on for the mover itself. `Piece.tsx`'s `animateFrom` is consumed once in a
+  mount-only `useLayoutEffect` (empty deps, deliberately) and driven by `useFrame`; the
+  group's position is never set via a JSX `position` attribute, only imperatively, so r3f's
+  own prop-diffing never fights the animation. `BoardScene` only computes `animateFrom` for
+  an exact single-ply step (forward or backward) via `prevPlyRef` — bigger jumps snap.
 - **All chess rules/PGN/UCI parsing live in `src/lib/chessRules.ts`**, wrapping `chess.js`.
   Nothing else in the codebase should import `chess.js` directly — route through this
   module so there is exactly one seam to test and one place that understands FEN/SAN/UCI.

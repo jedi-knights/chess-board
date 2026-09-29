@@ -1,4 +1,4 @@
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { fenToPieces } from "../lib/chessRules";
@@ -78,6 +78,29 @@ interface BoardSceneProps {
 export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
   const pieces = fenToPieces(fen);
   const humanColor = useGameStore((s) => s.humanColor);
+  const plies = useGameStore((s) => s.plies);
+  const ply = useGameStore((s) => s.ply);
+
+  // Animate exactly one square's worth of movement: a single step forward
+  // (human/engine move, autoplay tick, or the ">" button) or backward (the
+  // "<" button). Any bigger jump (|<, >|, clicking a distant move, loading
+  // a new game) snaps instantly instead -- diffing an arbitrary jump into
+  // "which piece moved where" isn't well-defined the way a single ply is.
+  const prevPlyRef = useRef(ply);
+  let animatedToSquare: string | null = null;
+  let animateFromPosition: [number, number] | null = null;
+  if (ply === prevPlyRef.current + 1 && ply <= plies.length) {
+    const moved = plies[ply - 1];
+    animatedToSquare = moved.uci.slice(2, 4);
+    animateFromPosition = squareToPosition(moved.uci.slice(0, 2));
+  } else if (ply === prevPlyRef.current - 1 && ply < plies.length) {
+    const moved = plies[ply];
+    animatedToSquare = moved.uci.slice(0, 2);
+    animateFromPosition = squareToPosition(moved.uci.slice(2, 4));
+  }
+  useLayoutEffect(() => {
+    prevPlyRef.current = ply;
+  }, [ply]);
 
   // White's home ranks sit at world -Z, Black's at +Z (see boardGeometry.ts).
   // Position the camera on the human's own side so their pieces render
@@ -111,6 +134,7 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
           color={piece.color}
           position={squareToPosition(piece.square)}
           square={piece.square}
+          animateFrom={piece.square === animatedToSquare ? animateFromPosition ?? undefined : undefined}
         />
       ))}
     </Canvas>
