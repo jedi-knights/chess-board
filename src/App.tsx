@@ -8,6 +8,7 @@ import { LichessBotControls } from "./components/LichessBotControls";
 import { LichessControls } from "./components/LichessControls";
 import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
+import { PieceStyleSelect } from "./components/PieceStyleSelect";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { useAppliedTheme } from "./hooks/useAppliedTheme";
@@ -35,6 +36,7 @@ function App() {
             View: {cameraMode.toUpperCase()}
           </button>
           <BoardPaletteSelect />
+          <PieceStyleSelect />
           <ThemeToggle />
         </div>
       </header>
