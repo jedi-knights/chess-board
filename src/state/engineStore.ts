@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { fenAtPly, gameStatus, sideToMove } from "../lib/chessRules";
 import { buildGoCommand, buildPositionCommand, parseUciLine } from "../lib/uci";
 import { useGameStore } from "./gameStore";
@@ -15,12 +16,14 @@ export interface EngineInfo {
 }
 
 interface EngineStoreState {
-  status: EngineStatus;
+  /** Selected engine path -- persisted across sessions, independent of status. */
   path: string | null;
+  status: EngineStatus;
   movetimeMs: number;
   lastInfo: EngineInfo | null;
   errorMessage: string | null;
 
+  setPath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
   startEngine: (path: string) => Promise<void>;
   stopEngine: () => Promise<void>;
@@ -104,32 +107,49 @@ function installListenersOnce() {
   });
 }
 
-export const useEngineStore = create<EngineStoreState>((set) => ({
-  status: "idle",
-  path: null,
-  movetimeMs: 1000,
-  lastInfo: null,
-  errorMessage: null,
+const NOT_RUNNING = new Set<EngineStatus>(["idle", "error", "crashed"]);
 
-  setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
+export const useEngineStore = create<EngineStoreState>()(
+  persist(
+    (set, get) => ({
+      path: null,
+      status: "idle",
+      movetimeMs: 1000,
+      lastInfo: null,
+      errorMessage: null,
 
-  startEngine: async (path) => {
-    installListenersOnce();
-    set({ status: "starting", path, errorMessage: null, lastInfo: null });
-    try {
-      await invoke("engine_start", { path });
-      set({ status: "ready" });
-      maybeRequestEngineMove();
-    } catch (err) {
-      set({ status: "error", errorMessage: String(err) });
-    }
-  },
+      setPath: (path) => set({ path }),
+      setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
 
-  stopEngine: async () => {
-    try {
-      await invoke("engine_stop");
-    } finally {
-      set({ status: "idle", lastInfo: null });
-    }
-  },
-}));
+      startEngine: async (path) => {
+        // Re-entrancy guard: a double-click (or any duplicate call while a
+        // start is already in flight) would otherwise spawn a second
+        // process, whose Rust-side startup kills the first one mid-flight
+        // and surfaces as a spurious "engine process exited unexpectedly".
+        if (!NOT_RUNNING.has(get().status)) return;
+
+        installListenersOnce();
+        set({ status: "starting", path, errorMessage: null, lastInfo: null });
+        try {
+          await invoke("engine_start", { path });
+          set({ status: "ready" });
+          maybeRequestEngineMove();
+        } catch (err) {
+          set({ status: "error", errorMessage: String(err) });
+        }
+      },
+
+      stopEngine: async () => {
+        try {
+          await invoke("engine_stop");
+        } finally {
+          set({ status: "idle", lastInfo: null });
+        }
+      },
+    }),
+    {
+      name: "chess-board-engine",
+      partialize: (state) => ({ path: state.path, movetimeMs: state.movetimeMs }),
+    },
+  ),
+);
