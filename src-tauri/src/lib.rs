@@ -1,5 +1,6 @@
 mod debug_log;
 mod engine;
+mod lichess;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -19,7 +20,8 @@ pub fn run() {
             engine::engine_write_line,
             engine::engine_stop,
             debug_log::debug_log_append,
-            debug_log::debug_log_clear
+            debug_log::debug_log_clear,
+            lichess::lichess_export_pgn
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
