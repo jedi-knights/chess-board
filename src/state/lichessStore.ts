@@ -24,13 +24,23 @@ export function pendingMoveToSend(
   return lastPly.uci;
 }
 
+/**
+ * The subset of Lichess's full moves-so-far list not yet applied locally.
+ * Diffing against the live ply count (not a separately tracked counter
+ * incremented only when *receiving* a move) is what stays correct across
+ * Lichess echoing back a move this app already applied locally after
+ * sending it -- a stale separate counter would replay that echo through
+ * `attemptMove` a second time and duplicate the ply.
+ */
+export function movesToApply(moves: string[], localPlyCount: number): string[] {
+  return moves.slice(localPlyCount);
+}
+
 interface LichessStoreState {
   hasToken: boolean;
   gameId: string | null;
   status: LichessStatus;
   errorMessage: string | null;
-  /** How many of Lichess's moves-so-far we've already applied locally. */
-  knownMoveCount: number;
   lastSentUci: string | null;
 
   refreshHasToken: () => Promise<void>;
@@ -58,8 +68,7 @@ function failLichess(message: string) {
 
 function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   if (!update) return;
-  const { knownMoveCount } = useLichessStore.getState();
-  const newMoves = update.moves.slice(knownMoveCount);
+  const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);
   for (const uci of newMoves) {
     const from = uci.slice(0, 2);
     const to = uci.slice(2, 4);
@@ -70,7 +79,6 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
       return;
     }
   }
-  useLichessStore.setState({ knownMoveCount: update.moves.length });
 
   if (isTerminalStatus(update.status)) {
     logDebug(`game over: ${update.status}`);
@@ -130,7 +138,6 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
   gameId: null,
   status: "idle",
   errorMessage: null,
-  knownMoveCount: 0,
   lastSentUci: null,
 
   refreshHasToken: async () => {
@@ -158,7 +165,6 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
     set({
       status: "connecting",
       errorMessage: null,
-      knownMoveCount: 0,
       lastSentUci: null,
       gameId: gameIdOrUrl,
     });
