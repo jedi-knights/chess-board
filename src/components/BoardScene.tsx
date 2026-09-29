@@ -124,6 +124,13 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <color attach="background" args={[SCENE_BACKGROUND[theme]]} />
       <ambientLight intensity={theme === "dark" ? 0.45 : 0.6} />
       <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
+      {/* Fill light from the opposite side, no shadow -- with only the
+          key light above, the side of a piece facing away from it gets
+          ambient light alone, which reads as a nearly featureless flat
+          silhouette on the dark piece material. A soft fill is the
+          standard fix for revealing shape on dark materials without
+          washing out the key light's contrast on the light pieces. */}
+      <directionalLight position={[-6, 6, -4]} intensity={0.35} />
       <LookAtBoardCenter cameraMode={cameraMode} humanColor={humanColor} />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
       <BoardSquares palette={palette} />
