@@ -8,7 +8,6 @@ A Tauri + Three.js desktop app for visualizing and stepping through chess games 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <p align="center">
-  <a href="#overview">Overview</a> ·
   <a href="#features">Features</a> ·
   <a href="#requirements">Requirements</a> ·
   <a href="#installation">Installation</a> ·
@@ -16,8 +15,7 @@ A Tauri + Three.js desktop app for visualizing and stepping through chess games 
   <a href="#examples">Examples</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#development">Development</a> ·
-  <a href="#contributing">Contributing</a> ·
-  <a href="#license">License</a>
+  <a href="#contributing">Contributing</a>
 </p>
 
 ## Overview
