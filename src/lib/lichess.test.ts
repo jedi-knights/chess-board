@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTerminalStatus, parseLichessLine } from "./lichess";
+import { isTerminalStatus, parseLichessAccountEvent, parseLichessLine } from "./lichess";
 
 describe("parseLichessLine", () => {
   it("parses a gameFull line via its nested state", () => {
@@ -55,5 +55,78 @@ describe("isTerminalStatus", () => {
     expect(isTerminalStatus("draw")).toBe(true);
     expect(isTerminalStatus("outoftime")).toBe(true);
     expect(isTerminalStatus("aborted")).toBe(true);
+  });
+});
+
+describe("parseLichessAccountEvent", () => {
+  it("parses a challenge event", () => {
+    const line = JSON.stringify({ type: "challenge", challenge: { id: "abcd1234" } });
+    expect(parseLichessAccountEvent(line)).toEqual({
+      type: "challenge",
+      challengeId: "abcd1234",
+    });
+  });
+
+  it("parses a gameStart event where the bot plays white", () => {
+    const line = JSON.stringify({
+      type: "gameStart",
+      game: { gameId: "abcd1234", color: "white" },
+    });
+    expect(parseLichessAccountEvent(line)).toEqual({
+      type: "gameStart",
+      gameId: "abcd1234",
+      botColor: "w",
+    });
+  });
+
+  it("parses a gameStart event where the bot plays black", () => {
+    const line = JSON.stringify({
+      type: "gameStart",
+      game: { gameId: "abcd1234", color: "black" },
+    });
+    expect(parseLichessAccountEvent(line)).toEqual({
+      type: "gameStart",
+      gameId: "abcd1234",
+      botColor: "b",
+    });
+  });
+
+  it("falls back to the game's id field when gameId is absent", () => {
+    const line = JSON.stringify({
+      type: "gameStart",
+      game: { id: "abcd1234", color: "white" },
+    });
+    expect(parseLichessAccountEvent(line)).toEqual({
+      type: "gameStart",
+      gameId: "abcd1234",
+      botColor: "w",
+    });
+  });
+
+  it("returns null for a gameStart event with a missing or malformed color, rather than defaulting", () => {
+    expect(
+      parseLichessAccountEvent(
+        JSON.stringify({ type: "gameStart", game: { gameId: "abcd1234" } }),
+      ),
+    ).toBeNull();
+    expect(
+      parseLichessAccountEvent(
+        JSON.stringify({ type: "gameStart", game: { gameId: "abcd1234", color: "purple" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for a challenge event with no id", () => {
+    expect(
+      parseLichessAccountEvent(JSON.stringify({ type: "challenge", challenge: {} })),
+    ).toBeNull();
+  });
+
+  it("returns null for an unrecognized event type", () => {
+    expect(parseLichessAccountEvent(JSON.stringify({ type: "challengeDeclined" }))).toBeNull();
+  });
+
+  it("returns null for malformed JSON", () => {
+    expect(parseLichessAccountEvent("not json")).toBeNull();
   });
 });

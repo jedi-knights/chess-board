@@ -68,3 +68,65 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
   }
   return null;
 }
+
+export interface LichessChallengeEvent {
+  type: "challenge";
+  challengeId: string;
+}
+
+export interface LichessGameStartEvent {
+  type: "gameStart";
+  gameId: string;
+  /** The color *this account* (the bot) plays in the started game. */
+  botColor: "w" | "b";
+}
+
+export type LichessAccountEvent = LichessChallengeEvent | LichessGameStartEvent;
+
+function readId(obj: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "string") return value;
+  }
+  return null;
+}
+
+/**
+ * Normalizes a single NDJSON line from the account-wide `/api/stream/event`
+ * endpoint (used by the Bot API to learn about incoming challenges and
+ * game starts). `null` for line types this app doesn't act on (declined
+ * challenges, etc.) or anything malformed.
+ *
+ * Reads both `id` and `gameId` for the game-start id field defensively --
+ * Lichess's own field naming here has drifted across API versions.
+ */
+export function parseLichessAccountEvent(raw: string): LichessAccountEvent | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof json !== "object" || json === null) return null;
+  const obj = json as Record<string, unknown>;
+
+  if (obj.type === "challenge" && typeof obj.challenge === "object" && obj.challenge !== null) {
+    const challengeId = readId(obj.challenge as Record<string, unknown>, "id");
+    return challengeId ? { type: "challenge", challengeId } : null;
+  }
+
+  if (obj.type === "gameStart" && typeof obj.game === "object" && obj.game !== null) {
+    const game = obj.game as Record<string, unknown>;
+    const gameId = readId(game, "gameId", "id", "fullId");
+    if (!gameId) return null;
+    // Deliberately strict, not a "w"-default: this decides which side the
+    // engine plays -- silently defaulting on a missing/malformed color
+    // would make the engine play the wrong side without ever raising an
+    // error, surfacing only as confusing "illegal move" rejections later.
+    if (game.color !== "white" && game.color !== "black") return null;
+    const botColor = game.color === "black" ? "b" : "w";
+    return { type: "gameStart", gameId, botColor };
+  }
+
+  return null;
+}

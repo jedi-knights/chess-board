@@ -156,12 +156,8 @@ pub async fn lichess_export_pgn(game_id_or_url: String) -> Result<String, String
     // A fresh client per call is deliberate: this command fires on a manual
     // button click, not a hot path, so per-call connection setup cost is
     // irrelevant -- not worth a managed, pooled `.manage()` client for one
-    // infrequent request. Revisit if a later phase adds a streamed/polled
-    // Lichess connection that actually benefits from pooling.
-    let client = reqwest::Client::builder()
-        .user_agent("chess-board (https://github.com/jedi-knights/chess-board)")
-        .build()
-        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+    // infrequent request.
+    let client = new_client()?;
     export_pgn(&client, &game_id).await
 }
 
@@ -198,9 +194,17 @@ fn stop_stream_locked(state: &SharedLichessState) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads the game stream response body as NDJSON, one line per Tauri event.
-/// Runs until the stream closes or the task is aborted by `stop_stream_locked`.
-async fn pump_game_stream(app: AppHandle, response: reqwest::Response) {
+/// Reads an NDJSON response body, one line per Tauri event. Used for both
+/// a specific game's move stream and the account-wide event stream --
+/// they're the same wire shape (newline-delimited JSON), just different
+/// event names and different content. Runs until the stream closes or the
+/// task is aborted by `stop_stream_locked`.
+async fn pump_ndjson_stream(
+    app: AppHandle,
+    response: reqwest::Response,
+    line_event: &'static str,
+    exit_event: &'static str,
+) {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     loop {
@@ -211,40 +215,51 @@ async fn pump_game_stream(app: AppHandle, response: reqwest::Response) {
                     let line = buffer[..newline].trim().to_string();
                     buffer.drain(..=newline);
                     if !line.is_empty() {
-                        let _ = app.emit("lichess-game-stream", line);
+                        let _ = app.emit(line_event, line);
                     }
                 }
             }
             Some(Err(e)) => {
-                let _ = app.emit("lichess-game-exit", format!("stream error: {e}"));
+                let _ = app.emit(exit_event, format!("stream error: {e}"));
                 return;
             }
             None => {
-                let _ = app.emit("lichess-game-exit", "stream closed".to_string());
+                let _ = app.emit(exit_event, "stream closed".to_string());
                 return;
             }
         }
     }
 }
 
-#[tauri::command]
-pub async fn lichess_stream_game(
+fn new_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("chess-board (https://github.com/jedi-knights/chess-board)")
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))
+}
+
+/// Shared body of `lichess_stream_game`/`lichess_bot_stream_game` -- `kind`
+/// is `"board"` or `"bot"`, the only difference in the request Lichess sees.
+/// Board- and bot-mode game streams share the same connection slot: this
+/// app plays either as a human (Board API) or runs a bot loop (Bot API) at
+/// any given moment, never both, so there's only ever one active game
+/// stream to track regardless of which mode started it.
+async fn stream_game_impl(
     app: AppHandle,
-    state: State<'_, LichessConnection>,
+    shared: SharedLichessState,
     game_id_or_url: String,
+    kind: &str,
+    line_event: &'static str,
+    exit_event: &'static str,
 ) -> Result<(), String> {
     let game_id = parse_game_id(&game_id_or_url)?;
     let token = token()?;
-    let shared = state.0.clone();
     // Never leak a previous stream task if the user connects to a new game
     // without explicitly disconnecting first.
     stop_stream_locked(&shared)?;
 
-    let client = reqwest::Client::builder()
-        .user_agent("chess-board (https://github.com/jedi-knights/chess-board)")
-        .build()
-        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-    let url = format!("https://lichess.org/api/board/game/stream/{game_id}");
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/{kind}/game/stream/{game_id}");
     let response = client
         .get(&url)
         .bearer_auth(&token)
@@ -257,9 +272,43 @@ pub async fn lichess_stream_game(
         return Err(format!("lichess returned {status} for game {game_id}"));
     }
 
-    let task = tokio::spawn(pump_game_stream(app, response));
+    let task = tokio::spawn(pump_ndjson_stream(app, response, line_event, exit_event));
     lock(&shared)?.stream_task = Some(task);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn lichess_stream_game(
+    app: AppHandle,
+    state: State<'_, LichessConnection>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    stream_game_impl(
+        app,
+        state.0.clone(),
+        game_id_or_url,
+        "board",
+        "lichess-game-stream",
+        "lichess-game-exit",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn lichess_bot_stream_game(
+    app: AppHandle,
+    state: State<'_, LichessConnection>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    stream_game_impl(
+        app,
+        state.0.clone(),
+        game_id_or_url,
+        "bot",
+        "lichess-bot-game-stream",
+        "lichess-bot-game-exit",
+    )
+    .await
 }
 
 #[tauri::command]
@@ -267,17 +316,19 @@ pub fn lichess_stop_game(state: State<'_, LichessConnection>) -> Result<(), Stri
     stop_stream_locked(&state.0)
 }
 
-#[tauri::command]
-pub async fn lichess_make_move(game_id_or_url: String, uci_move: String) -> Result<(), String> {
+/// Shared body of `lichess_make_move`/`lichess_bot_make_move` -- `kind` is
+/// `"board"` or `"bot"`, the only difference in the request Lichess sees.
+async fn make_move_impl(
+    game_id_or_url: String,
+    uci_move: String,
+    kind: &str,
+) -> Result<(), String> {
     let game_id = parse_game_id(&game_id_or_url)?;
     validate_uci_move(&uci_move)?;
     let token = token()?;
 
-    let client = reqwest::Client::builder()
-        .user_agent("chess-board (https://github.com/jedi-knights/chess-board)")
-        .build()
-        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-    let url = format!("https://lichess.org/api/board/game/{game_id}/move/{uci_move}");
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/{kind}/game/{game_id}/move/{uci_move}");
     let response = client
         .post(&url)
         .bearer_auth(&token)
@@ -289,6 +340,112 @@ pub async fn lichess_make_move(game_id_or_url: String, uci_move: String) -> Resu
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(format!("lichess rejected move {uci_move}: {status} {body}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn lichess_make_move(game_id_or_url: String, uci_move: String) -> Result<(), String> {
+    make_move_impl(game_id_or_url, uci_move, "board").await
+}
+
+#[tauri::command]
+pub async fn lichess_bot_make_move(game_id_or_url: String, uci_move: String) -> Result<(), String> {
+    make_move_impl(game_id_or_url, uci_move, "bot").await
+}
+
+/// The account-wide event stream (incoming challenges, game starts) is a
+/// separate, independent connection from any specific game's move stream --
+/// it needs to keep running while listening for the *next* challenge even
+/// while a game is in progress, so it gets its own connection slot/type
+/// rather than sharing `LichessConnection`.
+pub struct LichessEventConnection(pub SharedLichessState);
+
+#[tauri::command]
+pub async fn lichess_stream_events(
+    app: AppHandle,
+    state: State<'_, LichessEventConnection>,
+) -> Result<(), String> {
+    let token = token()?;
+    let shared = state.0.clone();
+    stop_stream_locked(&shared)?;
+
+    let client = new_client()?;
+    let response = client
+        .get("https://lichess.org/api/stream/event")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "lichess returned {status} for the account event stream"
+        ));
+    }
+
+    let task = tokio::spawn(pump_ndjson_stream(
+        app,
+        response,
+        "lichess-event-stream",
+        "lichess-event-exit",
+    ));
+    lock(&shared)?.stream_task = Some(task);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn lichess_stop_events(state: State<'_, LichessEventConnection>) -> Result<(), String> {
+    stop_stream_locked(&state.0)
+}
+
+#[tauri::command]
+pub async fn lichess_challenge_accept(challenge_id: String) -> Result<(), String> {
+    // Challenge ids share the exact same 8-char alphanumeric shape as game
+    // ids -- reusing the validator here is deliberate, not a coincidence.
+    let id = parse_game_id(&challenge_id)?;
+    let token = token()?;
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/challenge/{id}/accept");
+    let response = client
+        .post(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "lichess rejected accepting challenge {id}: {status} {body}"
+        ));
+    }
+    Ok(())
+}
+
+/// Irreversible on Lichess's side: a bot account can never play rated
+/// games as a human again, nor be converted back. The frontend gates this
+/// behind an explicit, separately-confirmed action -- never bundle it into
+/// "start listening for challenges".
+#[tauri::command]
+pub async fn lichess_bot_upgrade() -> Result<(), String> {
+    let token = token()?;
+    let client = new_client()?;
+    let response = client
+        .post("https://lichess.org/api/bot/account/upgrade")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "lichess rejected the bot upgrade request: {status} {body}"
+        ));
     }
     Ok(())
 }

@@ -4,6 +4,7 @@ import { BoardScene } from "./components/BoardScene";
 import { EngineControls } from "./components/EngineControls";
 import { EngineOptions } from "./components/EngineOptions";
 import { GameLoader } from "./components/GameLoader";
+import { LichessBotControls } from "./components/LichessBotControls";
 import { LichessControls } from "./components/LichessControls";
 import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
@@ -47,6 +48,7 @@ function App() {
           <EngineOptions />
           <AnalysisPanel />
           <LichessControls />
+          <LichessBotControls />
           <GameLoader />
           <MoveList />
           <MoveLog />
