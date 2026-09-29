@@ -42,7 +42,7 @@ interface GameState {
 export const useGameStore = create<GameState>((set, get) => ({
   plies: [],
   ply: 0,
-  cameraMode: "2d",
+  cameraMode: "3d",
   loadError: null,
 
   mode: "replay",
