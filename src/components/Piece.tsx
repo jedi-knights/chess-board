@@ -12,6 +12,10 @@ const WHITE_MATERIAL_COLOR = "#f5f0e6";
 // read as nearly featureless silhouettes even with correct geometry.
 // Lightened, paired with BoardScene's new fill light.
 const BLACK_MATERIAL_COLOR = "#3a3a3a";
+// Real wooden sets glue a colored felt disc to the base's underside --
+// a cheap, authentic detail, and reference photos consistently show
+// green as the traditional felt color.
+const FELT_COLOR = "#1f3d2b";
 const MOVE_ANIMATION_MS = 220;
 
 /**
@@ -118,10 +122,16 @@ function PieceBody({
   const [baseTop, baseBottom] = BASE_RADIUS[type];
 
   const base = (
-    <mesh position={[0, 0.03, 0]} castShadow>
-      <cylinderGeometry args={[baseTop, baseBottom, 0.06, style.baseSegments]} />
-      {mat()}
-    </mesh>
+    <>
+      <mesh position={[0, 0.03, 0]} castShadow>
+        <cylinderGeometry args={[baseTop, baseBottom, 0.06, style.baseSegments]} />
+        {mat()}
+      </mesh>
+      <mesh position={[0, 0.006, 0]}>
+        <cylinderGeometry args={[baseBottom, baseBottom, 0.012, style.baseSegments]} />
+        <meshStandardMaterial color={FELT_COLOR} />
+      </mesh>
+    </>
   );
 
   switch (type) {
@@ -152,16 +162,20 @@ function PieceBody({
             <cylinderGeometry args={[0.2, 0.2, 0.08, seg]} />
             {mat()}
           </mesh>
-          {Array.from({ length: 6 }, (_, i) => {
-            const angle = (i / 6) * Math.PI * 2;
-            const r = 0.15;
+          {/* Merlons sit right at the rim's own outer radius (0.2) and are
+              wide enough that adjacent ones nearly touch -- real Staunton
+              crenellations are notches cut into one solid turret rim, not
+              separate blocks floating with visible gaps above it. */}
+          {Array.from({ length: 8 }, (_, i) => {
+            const angle = (i / 8) * Math.PI * 2;
+            const r = 0.19;
             return (
               <mesh
                 key={i}
-                position={[Math.cos(angle) * r, 0.47, Math.sin(angle) * r]}
+                position={[Math.cos(angle) * r, 0.48, Math.sin(angle) * r]}
                 castShadow
               >
-                <boxGeometry args={[0.07, 0.06, 0.07]} />
+                <boxGeometry args={[0.1, 0.08, 0.1]} />
                 {mat()}
               </mesh>
             );
