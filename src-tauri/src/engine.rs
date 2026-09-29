@@ -33,6 +33,25 @@ pub fn new_shared_state() -> SharedEngineState {
     Arc::new(Mutex::new(EngineState::default()))
 }
 
+/// One independent engine slot per side, so both sides can be engine-
+/// controlled at once (same binary or different ones -- each is its own OS
+/// process). Wrapped in distinct types because Tauri's `.manage()` state is
+/// keyed by type; a bare `SharedEngineState` couldn't be managed twice.
+pub struct WhiteEngine(pub SharedEngineState);
+pub struct BlackEngine(pub SharedEngineState);
+
+fn state_for_side<'a>(
+    side: &str,
+    white: &'a State<'_, WhiteEngine>,
+    black: &'a State<'_, BlackEngine>,
+) -> &'a SharedEngineState {
+    if side == "w" {
+        &white.0
+    } else {
+        &black.0
+    }
+}
+
 #[derive(Serialize, Clone)]
 pub struct EngineExitPayload {
     code: Option<i32>,
@@ -43,7 +62,9 @@ pub struct EngineExitPayload {
 }
 
 fn lock(state: &SharedEngineState) -> Result<MutexGuard<'_, EngineState>, String> {
-    state.lock().map_err(|_| "engine state lock poisoned".to_string())
+    state
+        .lock()
+        .map_err(|_| "engine state lock poisoned".to_string())
 }
 
 fn push_stderr_line(state: &SharedEngineState, line: String) {
@@ -61,7 +82,11 @@ fn push_stderr_line(state: &SharedEngineState, line: String) {
 fn stop_locked(state: &SharedEngineState) -> Result<(), String> {
     let (mut child, reader_handle, stderr_handle) = {
         let mut guard = lock(state)?;
-        (guard.child.take(), guard.reader_handle.take(), guard.stderr_handle.take())
+        (
+            guard.child.take(),
+            guard.reader_handle.take(),
+            guard.stderr_handle.take(),
+        )
     };
 
     if let Some(child) = child.as_mut() {
@@ -85,7 +110,12 @@ fn stop_locked(state: &SharedEngineState) -> Result<(), String> {
     Ok(())
 }
 
-fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Result<(), String> {
+fn start_locked(
+    app: AppHandle,
+    state: SharedEngineState,
+    side: String,
+    path: String,
+) -> Result<(), String> {
     let engine_path = Path::new(&path);
     if !engine_path.is_file() {
         return Err(format!("engine path is not a file: {path}"));
@@ -94,7 +124,7 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
     // Never leak a previous process if the user picks a new engine mid-run.
     stop_locked(&state)?;
 
-    let _ = crate::debug_log::append(&app, &format!("engine_start: path={path}"));
+    let _ = crate::debug_log::append(&app, &format!("[{side}] engine_start: path={path}"));
 
     let mut child = Command::new(engine_path)
         .stdin(Stdio::piped())
@@ -103,7 +133,7 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
         .spawn()
         .map_err(|e| {
             let msg = format!("failed to spawn engine at {path}: {e}");
-            let _ = crate::debug_log::append(&app, &msg);
+            let _ = crate::debug_log::append(&app, &format!("[{side}] {msg}"));
             msg
         })?;
 
@@ -134,12 +164,15 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
 
     let reader_state = state.clone();
     let reader_app = app.clone();
+    let stdout_event = format!("engine-stdout-{side}");
+    let exit_event = format!("engine-exit-{side}");
+    let reader_side = side.clone();
     let reader_handle = std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             match line {
                 Ok(text) => {
-                    let _ = reader_app.emit("engine-stdout", text);
+                    let _ = reader_app.emit(&stdout_event, text);
                 }
                 Err(_) => break,
             }
@@ -160,9 +193,9 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
         };
         let _ = crate::debug_log::append(
             &reader_app,
-            &format!("engine exited: code={code:?} stderr={stderr:?}"),
+            &format!("[{reader_side}] engine exited: code={code:?} stderr={stderr:?}"),
         );
-        let _ = reader_app.emit("engine-exit", EngineExitPayload { code, stderr });
+        let _ = reader_app.emit(&exit_event, EngineExitPayload { code, stderr });
     });
 
     let mut guard = lock(&state)?;
@@ -174,7 +207,10 @@ fn start_locked(app: AppHandle, state: SharedEngineState, path: String) -> Resul
 
 fn write_line_locked(state: &SharedEngineState, line: &str) -> Result<(), String> {
     let mut guard = lock(state)?;
-    let child = guard.child.as_mut().ok_or_else(|| "no engine is running".to_string())?;
+    let child = guard
+        .child
+        .as_mut()
+        .ok_or_else(|| "no engine is running".to_string())?;
     let stdin = child
         .stdin
         .as_mut()
@@ -188,30 +224,44 @@ fn write_line_locked(state: &SharedEngineState, line: &str) -> Result<(), String
 #[tauri::command]
 pub fn engine_start(
     app: AppHandle,
-    state: State<'_, SharedEngineState>,
+    white: State<'_, WhiteEngine>,
+    black: State<'_, BlackEngine>,
+    side: String,
     path: String,
 ) -> Result<(), String> {
-    start_locked(app, state.inner().clone(), path)
+    let state = state_for_side(&side, &white, &black).clone();
+    start_locked(app, state, side, path)
 }
 
 #[tauri::command]
-pub fn engine_write_line(state: State<'_, SharedEngineState>, line: String) -> Result<(), String> {
-    write_line_locked(state.inner(), &line)
+pub fn engine_write_line(
+    white: State<'_, WhiteEngine>,
+    black: State<'_, BlackEngine>,
+    side: String,
+    line: String,
+) -> Result<(), String> {
+    write_line_locked(state_for_side(&side, &white, &black), &line)
 }
 
 #[tauri::command]
-pub fn engine_stop(state: State<'_, SharedEngineState>) -> Result<(), String> {
-    stop_locked(state.inner())
+pub fn engine_stop(
+    white: State<'_, WhiteEngine>,
+    black: State<'_, BlackEngine>,
+    side: String,
+) -> Result<(), String> {
+    stop_locked(state_for_side(&side, &white, &black))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // start_locked takes an AppHandle, which needs a running Tauri app to
-    // construct -- exercising the path-validation branch is covered by the
-    // manual dev-mode verification in the PR (pick a bogus path, see the
-    // error surface), not a unit test here.
+    // start_locked and state_for_side both need a real AppHandle/State<'_,
+    // T>, which needs a running Tauri app to construct -- exercising the
+    // path-validation branch and the side-dispatch branch is covered by
+    // manual dev-mode verification (pick a bogus path, run two engines at
+    // once, see both the error surface and the right slot moving), not a
+    // unit test here.
 
     #[test]
     fn write_line_fails_with_no_engine_running() {
@@ -237,5 +287,20 @@ mod tests {
         // Oldest lines are dropped first -- the most recent ones survive.
         assert_eq!(guard.stderr_tail.first().unwrap(), "line 10");
         assert_eq!(guard.stderr_tail.last().unwrap(), "line 29");
+    }
+
+    #[test]
+    fn two_engine_slots_are_fully_independent() {
+        // The white/black split only matters if mutating one slot's state
+        // (here, its stderr tail -- the cheapest thing to mutate without an
+        // AppHandle) never touches the other.
+        let white = new_shared_state();
+        let black = new_shared_state();
+        push_stderr_line(&white, "white only".to_string());
+        assert!(lock(&white)
+            .unwrap()
+            .stderr_tail
+            .contains(&"white only".to_string()));
+        assert!(lock(&black).unwrap().stderr_tail.is_empty());
     }
 }

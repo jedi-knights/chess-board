@@ -1,4 +1,5 @@
-import { useEngineStore } from "../state/engineStore";
+import { engineStoreForSide } from "../state/engineStore";
+import { useGameStore } from "../state/gameStore";
 
 function formatScore(depth: number | undefined, scoreCp?: number, scoreMate?: number): string {
   const parts: string[] = [];
@@ -14,7 +15,11 @@ function formatScore(depth: number | undefined, scoreCp?: number, scoreMate?: nu
  * isn't enough to see how a search actually converged while debugging.
  */
 export function AnalysisPanel() {
-  const history = useEngineStore((s) => s.searchInfoHistory);
+  // "The" engine, for this single-engine-at-a-time panel, is whichever
+  // side controllers currently marks "engine" -- true for every mode this
+  // panel is shown in today (human vs. engine, engine vs. Lichess).
+  const engineSide = useGameStore((s) => (s.controllers.w === "engine" ? "w" : "b"));
+  const history = engineStoreForSide(engineSide)((s) => s.searchInfoHistory);
 
   if (history.length === 0) {
     return null;

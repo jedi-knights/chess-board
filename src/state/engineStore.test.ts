@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatEngineExitMessage } from "./engineStore";
+import {
+  engineStoreForSide,
+  formatEngineExitMessage,
+  useBlackEngineStore,
+  useWhiteEngineStore,
+} from "./engineStore";
 
 describe("formatEngineExitMessage", () => {
   it("reports the exit code when known", () => {
@@ -29,5 +34,19 @@ describe("formatEngineExitMessage", () => {
     expect(formatEngineExitMessage({ code: null, stderr: "  \n  oops  \n  " })).toBe(
       "engine process exited unexpectedly\noops",
     );
+  });
+});
+
+describe("two engine slots", () => {
+  it("are fully independent instances -- mutating one never touches the other", () => {
+    useWhiteEngineStore.setState({ path: "/white/engine" });
+    useBlackEngineStore.setState({ path: "/black/engine" });
+    expect(useWhiteEngineStore.getState().path).toBe("/white/engine");
+    expect(useBlackEngineStore.getState().path).toBe("/black/engine");
+  });
+
+  it("engineStoreForSide resolves each side to its own store", () => {
+    expect(engineStoreForSide("w")).toBe(useWhiteEngineStore);
+    expect(engineStoreForSide("b")).toBe(useBlackEngineStore);
   });
 });

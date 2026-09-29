@@ -1,19 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { isTerminalStatus, parseLichessAccountEvent, parseLichessLine } from "../lib/lichess";
-import { useEngineStore } from "./engineStore";
+import { engineStoreForSide } from "./engineStore";
 import { useGameStore } from "./gameStore";
 import { movesToApply, pendingMoveToSend } from "./lichessStore";
 
 export type LichessBotStatus = "idle" | "listening" | "playing" | "error";
 
 interface LichessBotStoreState {
+  /** This mode's engine choice, independent of the White/Black engine
+   * slots -- Bot API mode doesn't know which color Lichess will assign
+   * the bot until a challenge actually arrives, so it can't pin its
+   * engine choice to either per-side store the way Human-vs-Engine mode
+   * pins its one engine to "whichever color the human didn't pick."
+   * `handleGameStart` copies this into whichever side's store the bot
+   * actually ends up playing, right before starting it. */
+  enginePath: string | null;
+  movetimeMs: number;
   status: LichessBotStatus;
   errorMessage: string | null;
   activeGameId: string | null;
   lastSentUci: string | null;
 
+  setEnginePath: (path: string) => void;
+  setMovetimeMs: (ms: number) => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
    * doc comment. The caller (the UI) is responsible for a separate,
    * explicit confirmation step before calling this. Returns whether it
@@ -54,25 +66,42 @@ async function handleChallenge(challengeId: string) {
 }
 
 async function handleGameStart(gameId: string, botColor: "w" | "b") {
-  const enginePath = useEngineStore.getState().path;
+  const { enginePath, movetimeMs } = useLichessBotStore.getState();
   if (!enginePath) {
     failBot("a game started, but no engine binary is selected");
     return;
   }
+  const engine = engineStoreForSide(botColor);
 
-  const opponentColor = botColor === "w" ? "b" : "w";
   logDebug(`game starting: ${gameId}, engine plays ${botColor}`);
   useLichessBotStore.setState({ activeGameId: gameId, lastSentUci: null, errorMessage: null });
 
   // Same ordering as EngineControls/LichessControls: reset the board
   // *before* the engine or the game stream is confirmed, so nothing stale
-  // from a previous game can land on the fresh one -- startEngine only
-  // unlocks moves (enterPlayMode) once it has confirmed the engine
-  // actually started.
-  useGameStore.getState().startNewGame(opponentColor);
+  // from a previous game can land on the fresh one.
+  useGameStore.getState().startNewGame({
+    w: botColor === "w" ? "engine" : "lichess",
+    b: botColor === "w" ? "lichess" : "engine",
+  });
   try {
-    await useEngineStore.getState().startEngine(enginePath);
+    // This mode's own movetime choice (see enginePath's doc comment) has
+    // to be copied into whichever side's store actually starts, since
+    // that store's own persisted movetimeMs may be stale from a different
+    // mode entirely.
+    engine.getState().setMovetimeMs(movetimeMs);
+    await engine.getState().startEngine(enginePath);
+    // startEngine never rejects on failure (it reports failure via status +
+    // errorMessage instead) -- must check the resulting status explicitly.
+    if (engine.getState().status !== "ready") {
+      failBot(engine.getState().errorMessage ?? "engine failed to start");
+      return;
+    }
     await invoke("lichess_bot_stream_game", { gameIdOrUrl: gameId });
+    // Only unlock moves once *both* the engine and the bot game stream have
+    // confirmed ready -- startEngine deliberately no longer does this
+    // itself (see its own doc comment), so this store owns the ordering.
+    useGameStore.getState().enterPlayMode();
+    engine.getState().checkTurn();
     useLichessBotStore.setState({ status: "playing" });
   } catch (err) {
     failBot(String(err));
@@ -105,18 +134,17 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
 }
 
 /** Sends the engine's own just-made move to Lichess -- the Bot API
- * counterpart to lichessStore's maybeSendHumanMove. gameStore.humanColor
- * means "the side not run by the local engine" in every mode, including
- * this one (where that side is the Lichess opponent, not a human), so the
- * engine's color is simply the other one. */
+ * counterpart to lichessStore's maybeSendHumanMove. The engine's side is
+ * whichever one `controllers` marks `"engine"` -- exactly one side, since
+ * this mode always pairs one local engine against the Lichess opponent. */
 function maybeSendEngineMove() {
   const bot = useLichessBotStore.getState();
   const game = useGameStore.getState();
   if (bot.status !== "playing" || !bot.activeGameId) return;
   if (game.mode !== "play" || game.ply !== game.plies.length) return;
 
-  const engineColor = game.humanColor === "w" ? "b" : "w";
-  const uci = pendingMoveToSend(game.plies, engineColor, bot.lastSentUci);
+  const engineSide = game.controllers.w === "engine" ? "w" : "b";
+  const uci = pendingMoveToSend(game.plies, engineSide, bot.lastSentUci);
   if (!uci) return;
 
   useLichessBotStore.setState({ lastSentUci: uci });
@@ -167,46 +195,59 @@ function installListenersOnce() {
 
 const NOT_LISTENING = new Set<LichessBotStatus>(["idle", "error"]);
 
-export const useLichessBotStore = create<LichessBotStoreState>((set, get) => ({
-  status: "idle",
-  errorMessage: null,
-  activeGameId: null,
-  lastSentUci: null,
+export const useLichessBotStore = create<LichessBotStoreState>()(
+  persist(
+    (set, get) => ({
+      enginePath: null,
+      movetimeMs: 1000,
+      status: "idle",
+      errorMessage: null,
+      activeGameId: null,
+      lastSentUci: null,
 
-  upgradeToBotAccount: async () => {
-    logDebug("requesting bot account upgrade");
-    try {
-      await invoke("lichess_bot_upgrade");
-      set({ errorMessage: null });
-      return true;
-    } catch (err) {
-      set({ errorMessage: String(err) });
-      return false;
-    }
-  },
+      setEnginePath: (enginePath) => set({ enginePath }),
+      setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
 
-  startListening: async () => {
-    // Re-entrancy guard, same reasoning as engineStore/lichessStore.
-    if (!NOT_LISTENING.has(get().status)) return;
+      upgradeToBotAccount: async () => {
+        logDebug("requesting bot account upgrade");
+        try {
+          await invoke("lichess_bot_upgrade");
+          set({ errorMessage: null });
+          return true;
+        } catch (err) {
+          set({ errorMessage: String(err) });
+          return false;
+        }
+      },
 
-    installListenersOnce();
-    set({ status: "listening", errorMessage: null, activeGameId: null, lastSentUci: null });
-    logDebug("listening for challenges");
-    try {
-      await invoke("lichess_stream_events");
-    } catch (err) {
-      failBot(String(err));
-    }
-  },
+      startListening: async () => {
+        // Re-entrancy guard, same reasoning as engineStore/lichessStore.
+        if (!NOT_LISTENING.has(get().status)) return;
 
-  stopListening: async () => {
-    logDebug("stop listening requested");
-    try {
-      await invoke("lichess_stop_events");
-      await invoke("lichess_stop_game");
-    } finally {
-      set({ status: "idle", errorMessage: null, activeGameId: null });
-      useGameStore.getState().exitPlayMode();
-    }
-  },
-}));
+        installListenersOnce();
+        set({ status: "listening", errorMessage: null, activeGameId: null, lastSentUci: null });
+        logDebug("listening for challenges");
+        try {
+          await invoke("lichess_stream_events");
+        } catch (err) {
+          failBot(String(err));
+        }
+      },
+
+      stopListening: async () => {
+        logDebug("stop listening requested");
+        try {
+          await invoke("lichess_stop_events");
+          await invoke("lichess_stop_game");
+        } finally {
+          set({ status: "idle", errorMessage: null, activeGameId: null });
+          useGameStore.getState().exitPlayMode();
+        }
+      },
+    }),
+    {
+      name: "chess-board-lichess-bot-engine",
+      partialize: (state) => ({ enginePath: state.enginePath, movetimeMs: state.movetimeMs }),
+    },
+  ),
+);

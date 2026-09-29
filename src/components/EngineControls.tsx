@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
-import { useEngineStore } from "../state/engineStore";
+import { engineStoreForSide } from "../state/engineStore";
 import { useGameStore } from "../state/gameStore";
 
 const RUNNING_STATUSES = new Set(["starting", "ready", "thinking"]);
@@ -16,6 +16,8 @@ function engineLabel(path: string | null, status: string): string {
 
 export function EngineControls() {
   const [humanColor, setHumanColor] = useState<"w" | "b">("w");
+  const engineColor = humanColor === "w" ? "b" : "w";
+  const useEngineStore = engineStoreForSide(engineColor);
 
   const path = useEngineStore((s) => s.path);
   const status = useEngineStore((s) => s.status);
@@ -24,10 +26,12 @@ export function EngineControls() {
   const setMovetimeMs = useEngineStore((s) => s.setMovetimeMs);
   const startEngine = useEngineStore((s) => s.startEngine);
   const stopEngine = useEngineStore((s) => s.stopEngine);
+  const checkTurn = useEngineStore((s) => s.checkTurn);
   const errorMessage = useEngineStore((s) => s.errorMessage);
   const lastInfo = useEngineStore((s) => s.lastInfo);
 
   const startNewGame = useGameStore((s) => s.startNewGame);
+  const enterPlayMode = useGameStore((s) => s.enterPlayMode);
   const mode = useGameStore((s) => s.mode);
 
   const running = RUNNING_STATUSES.has(status);
@@ -45,10 +49,18 @@ export function EngineControls() {
     // turn check can fire against the previous game's leftover position
     // and its (stale) reply lands on the fresh game as an "illegal move".
     // startNewGame deliberately leaves moves locked (mode stays "replay");
-    // startEngine only unlocks them (enterPlayMode) once it has confirmed
-    // the engine actually started -- see gameStore.startNewGame's comment.
-    startNewGame(humanColor);
+    // startEngine no longer unlocks them itself (see its own doc comment
+    // -- that would race with a second requested engine in other modes),
+    // so this component owns calling enterPlayMode()+checkTurn() once its
+    // one engine is actually ready.
+    startNewGame({ w: humanColor === "w" ? "human" : "engine", b: humanColor === "b" ? "human" : "engine" }, humanColor);
     await startEngine(path);
+    // startEngine never rejects on failure (it reports failure via status +
+    // errorMessage instead, see failEngine) -- must check the resulting
+    // status explicitly, or a failed start would still unlock moves here.
+    if (useEngineStore.getState().status !== "ready") return;
+    enterPlayMode();
+    checkTurn();
   }
 
   return (

@@ -8,18 +8,20 @@ import { useGameStore } from "./gameStore";
 export type LichessStatus = "idle" | "connecting" | "connected" | "error" | "gameOver";
 
 /**
- * Which of the plies just appended (if any) is the human's own move that
+ * Which of the plies just appended (if any) is `side`'s own move that
  * still needs to be sent to Lichess. `null` when the last move was received
- * from Lichess (its color won't match `humanColor`, since chess strictly
- * alternates) or has already been sent.
+ * from the opponent (its color won't match `side`, since chess strictly
+ * alternates) or has already been sent. Generic over `side` so both
+ * lichessStore (the human's side) and lichessBotStore (the local engine's
+ * side) can reuse it.
  */
 export function pendingMoveToSend(
   plies: Ply[],
-  humanColor: "w" | "b",
+  side: "w" | "b",
   lastSentUci: string | null,
 ): string | null {
   const lastPly = plies[plies.length - 1];
-  if (!lastPly || lastPly.color !== humanColor) return null;
+  if (!lastPly || lastPly.color !== side) return null;
   if (lastPly.uci === lastSentUci) return null;
   return lastPly.uci;
 }
@@ -98,7 +100,8 @@ function maybeSendHumanMove() {
   if (lichess.status !== "connected") return;
   if (game.mode !== "play" || game.ply !== game.plies.length) return;
 
-  const uci = pendingMoveToSend(game.plies, game.humanColor, lichess.lastSentUci);
+  const humanSide = game.controllers.w === "human" ? "w" : "b";
+  const uci = pendingMoveToSend(game.plies, humanSide, lichess.lastSentUci);
   if (!uci) return;
 
   useLichessStore.setState({ lastSentUci: uci });

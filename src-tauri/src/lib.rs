@@ -8,7 +8,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(engine::new_shared_state())
+        .manage(engine::WhiteEngine(engine::new_shared_state()))
+        .manage(engine::BlackEngine(engine::new_shared_state()))
         .manage(lichess::LichessConnection(lichess::new_shared_lichess_state()))
         .manage(lichess::LichessEventConnection(lichess::new_shared_lichess_state()))
         .setup(|app| {

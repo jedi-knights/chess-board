@@ -1,10 +1,11 @@
 import { useState } from "react";
 import type { UciOption } from "../lib/uci";
-import { useEngineStore } from "../state/engineStore";
+import { engineStoreForSide, type EngineStoreHook } from "../state/engineStore";
+import { useGameStore } from "../state/gameStore";
 
-function OptionControl({ option }: { option: UciOption }) {
-  const value = useEngineStore((s) => s.optionValues[option.name] ?? option.default ?? "");
-  const setOption = useEngineStore((s) => s.setOption);
+function OptionControl({ option, useEngine }: { option: UciOption; useEngine: EngineStoreHook }) {
+  const value = useEngine((s) => s.optionValues[option.name] ?? option.default ?? "");
+  const setOption = useEngine((s) => s.setOption);
   const [pendingText, setPendingText] = useState(value);
 
   switch (option.optionType) {
@@ -63,7 +64,10 @@ function OptionControl({ option }: { option: UciOption }) {
  * these were previously invisible; every option line was silently ignored.
  */
 export function EngineOptions() {
-  const options = useEngineStore((s) => s.options);
+  // See AnalysisPanel's comment -- same "the" single-engine assumption.
+  const engineSide = useGameStore((s) => (s.controllers.w === "engine" ? "w" : "b"));
+  const useEngine = engineStoreForSide(engineSide);
+  const options = useEngine((s) => s.options);
 
   if (options.length === 0) {
     return null;
@@ -75,7 +79,7 @@ export function EngineOptions() {
       {options.map((option) => (
         <label key={option.name} className="engine-field">
           {option.optionType === "button" ? null : option.name}
-          <OptionControl option={option} />
+          <OptionControl option={option} useEngine={useEngine} />
         </label>
       ))}
     </div>
