@@ -3,28 +3,37 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { fenAtPly, gameStatus, sideToMove } from "../lib/chessRules";
-import { buildGoCommand, buildPositionCommand, parseUciLine } from "../lib/uci";
+import {
+  appendSearchInfo,
+  buildGoCommand,
+  buildPositionCommand,
+  buildSetOptionCommand,
+  parseUciLine,
+  upsertOption,
+  type UciInfo,
+  type UciOption,
+} from "../lib/uci";
 import { useGameStore } from "./gameStore";
 
 export type EngineStatus = "idle" | "starting" | "ready" | "thinking" | "error" | "crashed";
-
-export interface EngineInfo {
-  depth?: number;
-  scoreCp?: number;
-  scoreMate?: number;
-  nodes?: number;
-}
 
 interface EngineStoreState {
   /** Selected engine path -- persisted across sessions, independent of status. */
   path: string | null;
   status: EngineStatus;
   movetimeMs: number;
-  lastInfo: EngineInfo | null;
+  lastInfo: UciInfo | null;
+  /** Every `info` line from the *current* search, oldest first, capped (see uci.ts). */
+  searchInfoHistory: UciInfo[];
+  /** Options the engine advertised after `uci`, e.g. UseNNUE/EvalFile. */
+  options: UciOption[];
+  /** The value last set (or the option's own default) per option name. */
+  optionValues: Record<string, string>;
   errorMessage: string | null;
 
   setPath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
+  setOption: (name: string, value?: string) => void;
   startEngine: (path: string) => Promise<void>;
   stopEngine: () => Promise<void>;
 }
@@ -47,7 +56,7 @@ function maybeRequestEngineMove() {
   if (sideToMove(fen) === game.humanColor) return;
   if (gameStatus(fen).over) return;
 
-  useEngineStore.setState({ status: "thinking" });
+  useEngineStore.setState({ status: "thinking", searchInfoHistory: [], lastInfo: null });
   const moves = game.plies.map((p) => p.uci);
   invoke("engine_write_line", { line: buildPositionCommand(moves) })
     .then(() => invoke("engine_write_line", { line: buildGoCommand(engine.movetimeMs) }))
@@ -79,14 +88,18 @@ function installListenersOnce() {
     if (message.type === "bestmove") {
       applyEngineBestMove(message.move);
     } else if (message.type === "info") {
-      useEngineStore.setState({
-        lastInfo: {
-          depth: message.depth,
-          scoreCp: message.scoreCp,
-          scoreMate: message.scoreMate,
-          nodes: message.nodes,
-        },
-      });
+      useEngineStore.setState((state) => ({
+        lastInfo: message,
+        searchInfoHistory: appendSearchInfo(state.searchInfoHistory, message),
+      }));
+    } else if (message.type === "option") {
+      useEngineStore.setState((state) => ({
+        options: upsertOption(state.options, message),
+        optionValues:
+          message.name in state.optionValues || message.default === undefined
+            ? state.optionValues
+            : { ...state.optionValues, [message.name]: message.default },
+      }));
     }
   });
 
@@ -116,10 +129,22 @@ export const useEngineStore = create<EngineStoreState>()(
       status: "idle",
       movetimeMs: 1000,
       lastInfo: null,
+      searchInfoHistory: [],
+      options: [],
+      optionValues: {},
       errorMessage: null,
 
       setPath: (path) => set({ path }),
       setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
+
+      setOption: (name, value) => {
+        if (value !== undefined) {
+          set((state) => ({ optionValues: { ...state.optionValues, [name]: value } }));
+        }
+        invoke("engine_write_line", { line: buildSetOptionCommand(name, value) }).catch(
+          (err) => set({ status: "error", errorMessage: String(err) }),
+        );
+      },
 
       startEngine: async (path) => {
         // Re-entrancy guard: a double-click (or any duplicate call while a
@@ -129,9 +154,22 @@ export const useEngineStore = create<EngineStoreState>()(
         if (!NOT_RUNNING.has(get().status)) return;
 
         installListenersOnce();
-        set({ status: "starting", path, errorMessage: null, lastInfo: null });
+        set({
+          status: "starting",
+          path,
+          errorMessage: null,
+          lastInfo: null,
+          searchInfoHistory: [],
+          options: [],
+          optionValues: {},
+        });
         try {
           await invoke("engine_start", { path });
+          // Triggers the id/option/uciok handshake burst so `options`
+          // populates. Fire-and-forget: the existing position/go flow
+          // already works without waiting on uciok, so this doesn't
+          // change the ready/turn-orchestration timing at all.
+          void invoke("engine_write_line", { line: "uci" });
           set({ status: "ready" });
           maybeRequestEngineMove();
         } catch (err) {
@@ -143,7 +181,7 @@ export const useEngineStore = create<EngineStoreState>()(
         try {
           await invoke("engine_stop");
         } finally {
-          set({ status: "idle", lastInfo: null });
+          set({ status: "idle", lastInfo: null, searchInfoHistory: [] });
         }
       },
     }),

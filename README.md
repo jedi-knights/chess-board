@@ -44,6 +44,8 @@ Or:     point chess-board at your engine binary, choose a side, and
 - **Move log transcript** with a live wall clock and, when the source PGN carries lichess/chess.com-style `%clk` or ICC-style `%emt` annotations, how long each side took on each move.
 - **Play a live game against any UCI engine** — choose an engine binary, pick a side, click a piece to see its legal destinations highlighted, click one to move. The engine replies automatically; no manual UCI typing.
 - **Remembers your last engine** across restarts, and labels it with a GitHub-style `owner/repo` identifier (e.g. `jedi-knights/chess-engine`) instead of a raw file path — the label also makes clear whether that engine is just selected or actually running.
+- **Search history panel** — every `info` line from the engine's current search (one per completed depth), not just the latest, so you can see how a search actually converged.
+- **Engine option controls** — whatever `option` lines an engine advertises after the UCI handshake (checkboxes, spin/combo/string fields, buttons) render as real controls instead of being silently ignored.
 - **Light / dark theme** — follows the OS by default, with a manual override that persists across restarts.
 - **Engine-agnostic by design** — the move model is driven by standard PGN/UCI notation, and live play spawns whatever binary you point it at — not tied to any one engine.
 
@@ -105,6 +107,8 @@ The move log now shows how long each side took per move, derived from the clock 
 
 **4. Play a live game against your own engine.** Build your UCI engine (e.g. `jedi-knights/chess-engine`'s `make` produces `./engine`), then in chess-board: **Choose engine binary…** → select that compiled binary → **Play as** White → **Start game**. Click a pawn, click one of its highlighted destination squares — the engine replies within your configured movetime, and the move log/board update automatically. **Gotcha:** the engine process is spawned directly (no shell involved), so point the picker at the actual compiled binary, not a shell script or `make` target.
 
+**5. Toggle an engine option mid-session.** `jedi-knights/chess-engine` advertises two options after the UCI handshake: `UseNNUE` (checkbox) and `EvalFile` (path). Once you've started that engine, the **Engine options** panel shows both — set `EvalFile` to the path of a `.jnn1` network, then check `UseNNUE`, and its next move uses the neural-net evaluation instead of the classical one. **Gotcha:** order matters for this specific engine (set `EvalFile` before checking `UseNNUE`) — chess-board sends whatever you change, in the order you change it, with no per-engine sequencing logic of its own.
+
 ## Configuration
 
 No environment variables or config files. Two things worth knowing about what the app can touch on your machine:
@@ -147,6 +151,8 @@ src/
     GameLoader.tsx          paste-PGN / paste-UCI textarea + "Open PGN file…"
     EngineControls.tsx      choose engine binary, pick a side, movetime,
                            start/stop a live game
+    EngineOptions.tsx        one control per UCI `option` the engine advertised
+    AnalysisPanel.tsx        scrolling history of the current search's `info` lines
     ThemeToggle.tsx, WallClock.tsx
   hooks/
     useAppliedTheme.ts      resolves system/light/dark and applies it
@@ -179,12 +185,10 @@ All chess rules and PGN/UCI parsing live in `src/lib/chessRules.ts`, wrapping [`
 
 ## Contributing
 
-Contributions welcome — fork, branch, and open a PR. Engine spawning and live play (see Features) are done; the natural next things to pick up (each as its own PR) are:
+Contributions welcome — fork, branch, and open a PR. Engine spawning, live play, a search-history panel, and engine option controls (see Features) are done; the natural next things to pick up (each as its own PR) are:
 
-1. **Visual polish** — GLTF piece models, tweened move animations, board themes.
-2. **A richer analysis view** — the current engine status line shows depth/score/mate; a dedicated panel with a scrolling PV/eval history would help more during real debugging sessions.
-3. **Drag-and-drop moves** as an alternative to click-to-select-then-click-destination, once there's a concrete reason the click flow falls short.
-4. **Engine `option` support** — surface a picked engine's UCI `option` lines (e.g. `UseNNUE`, `EvalFile`) as real UI controls instead of ignoring them.
+1. **Visual polish** — GLTF piece models (needs an actual model asset — not something to fabricate a source for; point the project at one you have rights to use), tweened move animations, board themes.
+2. **Drag-and-drop moves** as an alternative to click-to-select-then-click-destination, once there's a concrete reason the click flow falls short.
 
 If you're working on a UCI engine of your own and this tool is missing something you need to debug it, that's exactly the kind of issue/PR this project wants.
 

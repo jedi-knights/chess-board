@@ -1,5 +1,7 @@
+import { AnalysisPanel } from "./components/AnalysisPanel";
 import { BoardScene } from "./components/BoardScene";
 import { EngineControls } from "./components/EngineControls";
+import { EngineOptions } from "./components/EngineOptions";
 import { GameLoader } from "./components/GameLoader";
 import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
@@ -39,6 +41,8 @@ function App() {
         </div>
         <aside className="side-panel">
           <EngineControls />
+          <EngineOptions />
+          <AnalysisPanel />
           <GameLoader />
           <MoveList />
           <MoveLog />

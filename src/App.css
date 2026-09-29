@@ -137,6 +137,64 @@ body {
   margin: 0;
 }
 
+.engine-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  padding-bottom: 1em;
+  border-bottom: 1px solid var(--border);
+}
+
+.engine-options h2,
+.analysis-panel h2 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.analysis-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  padding-bottom: 1em;
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
+}
+
+.analysis-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 12em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+.analysis-entry {
+  display: flex;
+  gap: 0.6em;
+  white-space: nowrap;
+}
+
+.analysis-score {
+  min-width: 5em;
+  font-weight: 600;
+}
+
+.analysis-nodes {
+  min-width: 6em;
+  color: var(--border);
+}
+
+.analysis-pv {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--border);
+}
+
 .game-loader textarea {
   width: 100%;
   box-sizing: border-box;
