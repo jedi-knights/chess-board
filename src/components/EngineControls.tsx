@@ -1,16 +1,26 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { useEngineStore } from "../state/engineStore";
 import { useGameStore } from "../state/gameStore";
 
 const RUNNING_STATUSES = new Set(["starting", "ready", "thinking"]);
 
+function engineLabel(path: string | null, status: string): string {
+  if (!path) return "Choose engine binary…";
+  const identifier = deriveEngineIdentifier(path);
+  if (status === "ready" || status === "thinking") return `Running: ${identifier}`;
+  if (status === "starting") return `Starting: ${identifier}…`;
+  return `Engine: ${identifier}`;
+}
+
 export function EngineControls() {
-  const [enginePath, setEnginePath] = useState<string | null>(null);
   const [humanColor, setHumanColor] = useState<"w" | "b">("w");
 
+  const path = useEngineStore((s) => s.path);
   const status = useEngineStore((s) => s.status);
   const movetimeMs = useEngineStore((s) => s.movetimeMs);
+  const setPath = useEngineStore((s) => s.setPath);
   const setMovetimeMs = useEngineStore((s) => s.setMovetimeMs);
   const startEngine = useEngineStore((s) => s.startEngine);
   const stopEngine = useEngineStore((s) => s.stopEngine);
@@ -23,22 +33,26 @@ export function EngineControls() {
   const running = RUNNING_STATUSES.has(status);
 
   async function chooseEngine() {
-    const path = await open({ multiple: false });
-    if (!path || Array.isArray(path)) return;
-    setEnginePath(path);
+    const picked = await open({ multiple: false });
+    if (!picked || Array.isArray(picked)) return;
+    setPath(picked);
   }
 
   async function start() {
-    if (!enginePath) return;
-    await startEngine(enginePath);
+    if (!path) return;
+    // Reset the game to a clean, empty position *before* the engine
+    // reports ready -- otherwise, on a restart, the engine's post-ready
+    // turn check can fire against the previous game's leftover position
+    // and its (stale) reply lands on the fresh game as an "illegal move".
     startNewGame(humanColor);
+    await startEngine(path);
   }
 
   return (
     <div className="engine-controls">
       <h2>Play vs. engine</h2>
       <button onClick={chooseEngine} disabled={running}>
-        {enginePath ? `Engine: ${enginePath.split("/").pop()}` : "Choose engine binary…"}
+        {engineLabel(path, status)}
       </button>
       <label className="engine-field">
         Play as
@@ -63,7 +77,7 @@ export function EngineControls() {
         />
       </label>
       {!running ? (
-        <button onClick={start} disabled={!enginePath}>
+        <button onClick={start} disabled={!path}>
           Start game
         </button>
       ) : (

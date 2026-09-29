@@ -43,6 +43,7 @@ Or:     point chess-board at your engine binary, choose a side, and
 - **Step through ply by ply** — forward/back buttons, jump to start/end, autoplay, or click any move directly in the move list to jump to it.
 - **Move log transcript** with a live wall clock and, when the source PGN carries lichess/chess.com-style `%clk` or ICC-style `%emt` annotations, how long each side took on each move.
 - **Play a live game against any UCI engine** — choose an engine binary, pick a side, click a piece to see its legal destinations highlighted, click one to move. The engine replies automatically; no manual UCI typing.
+- **Remembers your last engine** across restarts, and labels it with a GitHub-style `owner/repo` identifier (e.g. `jedi-knights/chess-engine`) instead of a raw file path — the label also makes clear whether that engine is just selected or actually running.
 - **Light / dark theme** — follows the OS by default, with a manual override that persists across restarts.
 - **Engine-agnostic by design** — the move model is driven by standard PGN/UCI notation, and live play spawns whatever binary you point it at — not tied to any one engine.
 
@@ -70,7 +71,7 @@ This opens the app window.
 
 **To replay a game:** paste a PGN or a bare UCI move list into the text box, click **Load**, then use the playback controls under the board — `|<` `<` `Play/Pause` `>` `>|` — or click any move in the move list to jump straight to it.
 
-**To play against an engine:** click **Choose engine binary…** and pick your compiled UCI engine, choose **Play as** White or Black, optionally adjust **Movetime (ms)**, then **Start game**. Click one of your pieces — its legal destination squares highlight — then click a highlighted square to move. The engine replies on its own; watch the **Status** line for its depth/score while it's thinking.
+**To play against an engine:** click **Choose engine binary…** and pick your compiled UCI engine (chess-board remembers this choice across restarts, so you only need to do this once per engine), choose **Play as** White or Black, optionally adjust **Movetime (ms)**, then **Start game**. Click one of your pieces — its legal destination squares highlight — then click a highlighted square to move. The engine replies on its own; watch the **Status** line for its depth/score while it's thinking.
 
 Toggle **View: 2D / View: 3D** in the header to switch camera modes, and **Theme** to cycle system → light → dark.
 
@@ -158,11 +159,13 @@ src/
                            src-tauri never parses UCI, see Configuration
     boardGeometry.ts        algebraic square <-> 3D world coordinates
     time.ts                 duration/clock formatting
+    engineIdentifier.ts     path -> "owner/repo"-style label for the UI
   state/
     gameStore.ts            loaded/live game, current ply, camera mode,
                            click-to-move selection state
     engineStore.ts          engine connection status, movetime, watches
-                           gameStore to send position/go on the engine's turn
+                           gameStore to send position/go on the engine's turn;
+                           selected path + movetime persist across restarts
     themeStore.ts           theme preference, persisted
 src-tauri/
   src/lib.rs                Tauri Builder + fs/dialog/opener plugins

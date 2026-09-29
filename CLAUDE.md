@@ -55,6 +55,23 @@ this file and the human-facing docs.
   just validates via `chessRules.tryMove` and appends. Turn-taking orchestration
   (`engineStore.ts`'s `maybeRequestEngineMove`) lives entirely in `engineStore`, which
   subscribes to `gameStore`; the dependency only ever points one way.
+- **Starting a new game resets `gameStore` *before* spawning the engine, never after.**
+  `EngineControls.start()` calls `startNewGame()` first, then `startEngine()`. Reversing
+  that order is the exact bug that shipped once already: `startEngine`'s post-ready turn
+  check can fire against the *previous* game's leftover position, and the resulting
+  (stale) `bestmove` lands on the fresh game as a spurious "illegal move" error.
+- **`startEngine` guards against re-entrancy.** A double-invocation while a start is
+  already in flight would spawn a second process, whose Rust-side startup kills the first
+  one mid-flight — surfacing as a misleading "engine process exited unexpectedly" that has
+  nothing to do with the engine binary itself. See `NOT_RUNNING` check in `engineStore.ts`.
+- **The selected engine path (and movetime) persist across sessions** via `engineStore`'s
+  zustand `persist` middleware, same pattern as `themeStore`. Only `path`/`movetimeMs` are
+  persisted (`partialize`) — live `status`/`lastInfo`/`errorMessage` must not survive a
+  reload, since they describe a process that no longer exists.
+- **The engine label shows a derived "owner/repo" identifier** (`src/lib/engineIdentifier.ts`),
+  not a raw path or bare filename, and the label text itself distinguishes "selected" from
+  "running" (`Engine: x` vs `Running: x` vs `Starting: x…`) — do not collapse that back to a
+  bare path/basename display.
 - **Think-time is derived, not authoritative.** `%emt` comments are used directly when
   present; otherwise think-time is computed by diffing consecutive `%clk` readings for the
   same color plus the `TimeControl` header's increment. A PGN with neither leaves
@@ -69,7 +86,7 @@ this file and the human-facing docs.
   module's exported functions only, never `chess.js` internals or another module's
   private state.
 - One test file per lib/state module: `chessRules.test.ts`, `time.test.ts`, `uci.test.ts`,
-  `boardGeometry.test.ts`, `gameStore.test.ts`.
+  `boardGeometry.test.ts`, `gameStore.test.ts`, `engineIdentifier.test.ts`.
 - Rust: `engine.rs` has a couple of unit tests for the pure state-transition helpers
   (`write_line_locked`, `stop_locked` with no process running) that don't need a real
   `AppHandle`. The path-validation and actual-process-lifecycle branches are verified
