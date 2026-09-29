@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(engine::new_shared_state())
         .manage(lichess::LichessConnection(lichess::new_shared_lichess_state()))
+        .manage(lichess::LichessEventConnection(lichess::new_shared_lichess_state()))
         .setup(|app| {
             // A fresh debug.log per session, per the mandate that it must
             // never grow unbounded across a long-running dev session.
@@ -28,7 +29,13 @@ pub fn run() {
             lichess::lichess_token_clear,
             lichess::lichess_stream_game,
             lichess::lichess_stop_game,
-            lichess::lichess_make_move
+            lichess::lichess_make_move,
+            lichess::lichess_bot_stream_game,
+            lichess::lichess_bot_make_move,
+            lichess::lichess_stream_events,
+            lichess::lichess_stop_events,
+            lichess::lichess_challenge_accept,
+            lichess::lichess_bot_upgrade
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
