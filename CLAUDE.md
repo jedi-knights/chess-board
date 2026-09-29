@@ -35,7 +35,16 @@ this file and the human-facing docs.
 ## Design decisions (do not re-derive, re-read instead)
 
 - **One Three.js scene, camera-mode toggle** (`BoardScene.tsx`) — not two renderers for
-  2D vs 3D. Board/piece meshes are shared; only the camera type + controls differ.
+  2D vs 3D. Board/piece meshes are shared; only the camera type + controls differ. Default
+  mode is 3D.
+- **Board orientation follows `humanColor`, via the camera, never the board data.**
+  `squareToPosition`/`squareName` and every move-logic function stay in one fixed world
+  frame (white's home ranks always at world -Z) — only `BoardScene`'s camera position/`up`
+  vector change to put the human's side at the bottom of the view. In 2D mode the camera
+  looks straight down, which is a near-degenerate case for `lookAt`'s default up-vector
+  disambiguation — the explicit horizontal `up` set in `LookAtBoardCenter` is what actually
+  decides orientation there, not camera position. Do not "fix" orientation by flipping
+  `squareToPosition`'s sign — that would desync rendering from every move-legality check.
 - **All chess rules/PGN/UCI parsing live in `src/lib/chessRules.ts`**, wrapping `chess.js`.
   Nothing else in the codebase should import `chess.js` directly — route through this
   module so there is exactly one seam to test and one place that understands FEN/SAN/UCI.

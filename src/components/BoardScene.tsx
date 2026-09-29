@@ -41,13 +41,31 @@ function BoardSquares() {
   return <>{squares}</>;
 }
 
-/** Points the default camera at the board center on mount / camera-mode change. */
-function LookAtBoardCenter() {
+/**
+ * Points the default camera at the board center on mount / camera-mode
+ * change, and orients it so the human's own side renders at the bottom of
+ * the view. In 2D mode the camera looks straight down (-Y), which is a
+ * near-degenerate case for `lookAt`'s default up-vector disambiguation --
+ * an explicit horizontal `up` is what actually decides which rank ends up
+ * at the bottom of the screen, not the camera's position.
+ */
+function LookAtBoardCenter({
+  cameraMode,
+  humanColor,
+}: {
+  cameraMode: CameraMode;
+  humanColor: "w" | "b";
+}) {
   const { camera } = useThree();
   useLayoutEffect(() => {
+    if (cameraMode === "2d") {
+      camera.up.set(0, 0, humanColor === "w" ? 1 : -1);
+    } else {
+      camera.up.set(0, 1, 0);
+    }
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
-  }, [camera]);
+  }, [camera, cameraMode, humanColor]);
   return null;
 }
 
@@ -59,23 +77,30 @@ interface BoardSceneProps {
 
 export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
   const pieces = fenToPieces(fen);
+  const humanColor = useGameStore((s) => s.humanColor);
+
+  // White's home ranks sit at world -Z, Black's at +Z (see boardGeometry.ts).
+  // Position the camera on the human's own side so their pieces render
+  // closer to them, matching the 2D up-vector flip below.
+  const cameraPosition: [number, number, number] =
+    cameraMode === "2d" ? [0, 10, 0.001] : humanColor === "w" ? [0, 6, -7] : [0, 6, 7];
 
   return (
     <Canvas
-      key={cameraMode}
+      key={`${cameraMode}-${humanColor}`}
       shadows
       orthographic={cameraMode === "2d"}
       camera={
         cameraMode === "2d"
-          ? { position: [0, 10, 0.001], zoom: 60, near: 0.1, far: 100 }
-          : { position: [0, 6, 7], fov: 45 }
+          ? { position: cameraPosition, zoom: 60, near: 0.1, far: 100 }
+          : { position: cameraPosition, fov: 45 }
       }
       style={{ width: "100%", height: "100%" }}
     >
       <color attach="background" args={[SCENE_BACKGROUND[theme]]} />
       <ambientLight intensity={theme === "dark" ? 0.45 : 0.6} />
       <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
-      <LookAtBoardCenter />
+      <LookAtBoardCenter cameraMode={cameraMode} humanColor={humanColor} />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
       <BoardSquares />
       <MoveHighlights />

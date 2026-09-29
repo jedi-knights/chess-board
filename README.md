@@ -38,7 +38,7 @@ Or:     point chess-board at your engine binary, choose a side, and
 
 ## Features
 
-- **One Three.js scene, 2D and 3D from a single camera toggle** — no duplicated rendering path between the two views.
+- **One Three.js scene, 2D and 3D from a single camera toggle** — no duplicated rendering path between the two views. Defaults to 3D, and orients toward whichever side you're playing (your own pieces render closer to you, both in the top-down 2D view and the angled 3D one).
 - **Load a game three ways**: paste a PGN, paste a bare UCI move list (`e2e4 e7e5 g1f3 ...`), or use the native "Open PGN file…" dialog.
 - **Step through ply by ply** — forward/back buttons, jump to start/end, autoplay, or click any move directly in the move list to jump to it.
 - **Move log transcript** with a live wall clock and, when the source PGN carries lichess/chess.com-style `%clk` or ICC-style `%emt` annotations, how long each side took on each move.
