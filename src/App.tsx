@@ -1,4 +1,5 @@
 import { AnalysisPanel } from "./components/AnalysisPanel";
+import { BoardPaletteSelect } from "./components/BoardPaletteSelect";
 import { BoardScene } from "./components/BoardScene";
 import { EngineControls } from "./components/EngineControls";
 import { EngineOptions } from "./components/EngineOptions";
@@ -31,6 +32,7 @@ function App() {
           >
             View: {cameraMode.toUpperCase()}
           </button>
+          <BoardPaletteSelect />
           <ThemeToggle />
         </div>
       </header>

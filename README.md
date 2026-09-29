@@ -40,6 +40,7 @@ Or:     point chess-board at your engine binary, choose a side, and
 
 - **One Three.js scene, 2D and 3D from a single camera toggle** — no duplicated rendering path between the two views. Defaults to 3D, and orients toward whichever side you're playing (your own pieces render closer to you, both in the top-down 2D view and the angled 3D one).
 - **Pieces slide, not snap** — a single step forward or back (your move, the engine's reply, an autoplay tick, the `<`/`>` buttons) animates the moved piece; bigger jumps (`|<`, `>|`, jumping to a distant move, loading a new game) snap instantly.
+- **Selectable board color palettes** (Classic, Forest, Ocean, Slate), persisted across restarts, independent of the light/dark app theme.
 - **Load a game three ways**: paste a PGN, paste a bare UCI move list (`e2e4 e7e5 g1f3 ...`), or use the native "Open PGN file…" dialog.
 - **Step through ply by ply** — forward/back buttons, jump to start/end, autoplay, or click any move directly in the move list to jump to it.
 - **Move log transcript** with a live wall clock and, when the source PGN carries lichess/chess.com-style `%clk` or ICC-style `%emt` annotations, how long each side took on each move.
@@ -186,11 +187,10 @@ All chess rules and PGN/UCI parsing live in `src/lib/chessRules.ts`, wrapping [`
 
 ## Contributing
 
-Contributions welcome — fork, branch, and open a PR. Engine spawning, live play, a search-history panel, and engine option controls (see Features) are done; the natural next things to pick up (each as its own PR) are:
+Contributions welcome — fork, branch, and open a PR. Engine spawning, live play, a search-history panel, engine option controls, move animation, and board palettes (see Features) are done; the natural next things to pick up (each as its own PR) are:
 
 1. **GLTF piece models** — needs an actual model asset; not something to fabricate a source for. Point the project at one you have rights to use.
-2. **Board themes** — a few selectable square-color palettes, alongside the existing light/dark app theme.
-3. **Drag-and-drop moves** as an alternative to click-to-select-then-click-destination, once there's a concrete reason the click flow falls short.
+2. **Drag-and-drop moves** as an alternative to click-to-select-then-click-destination, once there's a concrete reason the click flow falls short.
 
 If you're working on a UCI engine of your own and this tool is missing something you need to debug it, that's exactly the kind of issue/PR this project wants.
 
