@@ -1,4 +1,4 @@
-import { useEngineStore } from "../state/engineStore";
+import { engineStoreForSide, type Side } from "../state/engineStore";
 
 function formatScore(depth: number | undefined, scoreCp?: number, scoreMate?: number): string {
   const parts: string[] = [];
@@ -13,8 +13,8 @@ function formatScore(depth: number | undefined, scoreCp?: number, scoreMate?: nu
  * depth) -- the current single-line status only shows the latest, which
  * isn't enough to see how a search actually converged while debugging.
  */
-export function AnalysisPanel() {
-  const history = useEngineStore((s) => s.searchInfoHistory);
+export function AnalysisPanel({ side }: { side: Side }) {
+  const history = engineStoreForSide(side)((s) => s.searchInfoHistory);
 
   if (history.length === 0) {
     return null;
@@ -22,7 +22,7 @@ export function AnalysisPanel() {
 
   return (
     <div className="analysis-panel">
-      <h2>Search history</h2>
+      <h2>Search history ({side === "w" ? "White" : "Black"})</h2>
       <ol className="analysis-entries">
         {history
           .slice()

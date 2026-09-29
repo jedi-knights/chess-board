@@ -1,10 +1,11 @@
 import { useState } from "react";
 import type { UciOption } from "../lib/uci";
-import { useEngineStore } from "../state/engineStore";
+import { engineStoreForSide, type Side } from "../state/engineStore";
 
-function OptionControl({ option }: { option: UciOption }) {
-  const value = useEngineStore((s) => s.optionValues[option.name] ?? option.default ?? "");
-  const setOption = useEngineStore((s) => s.setOption);
+function OptionControl({ side, option }: { side: Side; option: UciOption }) {
+  const store = engineStoreForSide(side);
+  const value = store((s) => s.optionValues[option.name] ?? option.default ?? "");
+  const setOption = store((s) => s.setOption);
   const [pendingText, setPendingText] = useState(value);
 
   switch (option.optionType) {
@@ -62,8 +63,8 @@ function OptionControl({ option }: { option: UciOption }) {
  * after `uci` (e.g. chess-engine's `UseNNUE` checkbox, `EvalFile` path) --
  * these were previously invisible; every option line was silently ignored.
  */
-export function EngineOptions() {
-  const options = useEngineStore((s) => s.options);
+export function EngineOptions({ side }: { side: Side }) {
+  const options = engineStoreForSide(side)((s) => s.options);
 
   if (options.length === 0) {
     return null;
@@ -71,11 +72,11 @@ export function EngineOptions() {
 
   return (
     <div className="engine-options">
-      <h2>Engine options</h2>
+      <h2>Engine options ({side === "w" ? "White" : "Black"})</h2>
       {options.map((option) => (
         <label key={option.name} className="engine-field">
           {option.optionType === "button" ? null : option.name}
-          <OptionControl option={option} />
+          <OptionControl side={side} option={option} />
         </label>
       ))}
     </div>

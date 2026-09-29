@@ -10,6 +10,10 @@ import {
 
 export type CameraMode = "2d" | "3d";
 export type GameMode = "replay" | "play";
+/** Who is choosing this side's moves. "engine" doesn't say *which* engine --
+ * that's each side's own engineStore instance (see engineStore.ts). */
+export type Controller = "human" | "engine";
+export type Controllers = { w: Controller; b: Controller };
 
 interface GameState {
   plies: Ply[];
@@ -18,7 +22,15 @@ interface GameState {
   loadError: string | null;
 
   mode: GameMode;
-  humanColor: "w" | "b";
+  controllers: Controllers;
+  /** Which side the camera favors -- purely cosmetic, independent of who's
+   * actually playing (both sides can be engines with no human at all). */
+  pov: "w" | "b";
+  /** Minimum ms between moves in a fully-automated (both-engine) game, so
+   * playback stays human-watchable even if movetime is set very low. Not
+   * applied when a human is playing either side -- their own reaction time
+   * already paces a human-vs-engine game. */
+  playbackDelayMs: number;
   selectedSquare: string | null;
   legalDestinationSquares: string[];
 
@@ -29,9 +41,11 @@ interface GameState {
   goToStart: () => void;
   goToEnd: () => void;
   setCameraMode: (mode: CameraMode) => void;
+  setPov: (pov: "w" | "b") => void;
+  setPlaybackDelayMs: (ms: number) => void;
   setLoadError: (message: string | null) => void;
 
-  startNewGame: (humanColor: "w" | "b") => void;
+  startNewGame: (controllers: Controllers) => void;
   enterPlayMode: () => void;
   exitPlayMode: () => void;
   selectSquare: (square: string) => void;
@@ -48,7 +62,9 @@ export const useGameStore = create<GameState>((set, get) => ({
   loadError: null,
 
   mode: "replay",
-  humanColor: "w",
+  controllers: { w: "human", b: "engine" },
+  pov: "w",
+  playbackDelayMs: 1500,
   selectedSquare: null,
   legalDestinationSquares: [],
 
@@ -83,9 +99,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setCameraMode: (cameraMode) => set({ cameraMode }),
 
+  setPov: (pov) => set({ pov }),
+
+  setPlaybackDelayMs: (playbackDelayMs) => set({ playbackDelayMs }),
+
   setLoadError: (loadError) => set({ loadError }),
 
-  startNewGame: (humanColor) =>
+  startNewGame: (controllers) =>
     set({
       plies: [],
       ply: 0,
@@ -95,7 +115,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // is exactly what let a human move pieces around with no engine
       // backing the game at all when engine_start subsequently failed.
       mode: "replay",
-      humanColor,
+      controllers,
       selectedSquare: null,
       legalDestinationSquares: [],
       loadError: null,
@@ -109,10 +129,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   selectSquare: (square) => {
     const state = get();
-    // Only the human's own turn, on the live position, in play mode.
+    // Only on the live position, in play mode, and only when the side to
+    // move is human-controlled -- a side set to "engine" never accepts a
+    // click, even if that engine hasn't actually replied yet.
     if (state.mode !== "play" || state.ply !== state.plies.length) return;
     const fen = fenAtPly(state.plies, state.ply);
-    if (sideToMove(fen) !== state.humanColor) return;
+    const toMove = sideToMove(fen);
+    if (state.controllers[toMove] !== "human") return;
 
     if (state.selectedSquare === square) {
       set({ selectedSquare: null, legalDestinationSquares: [] });
@@ -125,7 +148,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     const piece = fenToPieces(fen).find((p) => p.square === square);
-    if (!piece || piece.color !== state.humanColor) {
+    if (!piece || piece.color !== toMove) {
       set({ selectedSquare: null, legalDestinationSquares: [] });
       return;
     }

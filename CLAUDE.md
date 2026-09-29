@@ -59,14 +59,17 @@ this file and the human-facing docs.
 - **One Three.js scene, camera-mode toggle** (`BoardScene.tsx`) — not two renderers for
   2D vs 3D. Board/piece meshes are shared; only the camera type + controls differ. Default
   mode is 3D.
-- **Board orientation follows `humanColor`, via the camera, never the board data.**
-  `squareToPosition`/`squareName` and every move-logic function stay in one fixed world
-  frame (white's home ranks always at world -Z) — only `BoardScene`'s camera position/`up`
-  vector change to put the human's side at the bottom of the view. In 2D mode the camera
-  looks straight down, which is a near-degenerate case for `lookAt`'s default up-vector
-  disambiguation — the explicit horizontal `up` set in `LookAtBoardCenter` is what actually
-  decides orientation there, not camera position. Do not "fix" orientation by flipping
-  `squareToPosition`'s sign — that would desync rendering from every move-legality check.
+- **Board orientation follows `gameStore.pov`, via the camera, never the board data.**
+  `pov` is deliberately decoupled from `controllers` — it's purely cosmetic ("which side
+  renders at the bottom"), not "who is human," since both sides can be engines with no
+  human at all. `squareToPosition`/`squareName` and every move-logic function stay in one
+  fixed world frame (white's home ranks always at world -Z) — only `BoardScene`'s camera
+  position/`up` vector change to put `pov`'s side at the bottom of the view. In 2D mode the
+  camera looks straight down, which is a near-degenerate case for `lookAt`'s default
+  up-vector disambiguation — the explicit horizontal `up` set in `LookAtBoardCenter` is
+  what actually decides orientation there, not camera position. Do not "fix" orientation by
+  flipping `squareToPosition`'s sign — that would desync rendering from every move-legality
+  check.
 - **Move animation is driven at mount time, not by reacting to prop changes.** A `Piece`'s
   React key is its current square, so the piece that just moved always mounts fresh (its
   key changed) — there is no persisted component instance to animate a `position` prop
@@ -109,30 +112,54 @@ this file and the human-facing docs.
 - **`gameStore` knows nothing about the engine.** `attemptMove(from, to, promotion?)` is
   the single append path for both a human's click and an applied engine `bestmove` — it
   just validates via `chessRules.tryMove` and appends. Turn-taking orchestration
-  (`engineStore.ts`'s `maybeRequestEngineMove`) lives entirely in `engineStore`, which
-  subscribes to `gameStore`; the dependency only ever points one way.
-- **Starting a new game resets `gameStore` *before* spawning the engine, never after.**
-  `EngineControls.start()` calls `startNewGame()` first, then `startEngine()`. Reversing
-  that order is the exact bug that shipped once already: `startEngine`'s post-ready turn
-  check can fire against the *previous* game's leftover position, and the resulting
-  (stale) `bestmove` lands on the fresh game as a spurious "illegal move" error.
+  (`maybeRequestEngineMove`, closed over `side`) lives entirely inside each
+  `createEngineStore(side)` instance, which subscribes to `gameStore`; the dependency only
+  ever points one way, and there are two independent subscribers (one per side), not one.
+- **Two independent engine slots, not one.** `src-tauri/src/engine.rs`'s `WhiteEngine`/
+  `BlackEngine` and `src/state/engineStore.ts`'s `createEngineStore(side)` factory
+  (`useWhiteEngineStore`/`useBlackEngineStore`) both exist because a side can be
+  human-controlled, engine-controlled, or (in a fully-automated game) either side can be
+  *any* engine binary, including the same one twice. Every command/event on the Rust side
+  takes a `side: String` ("w"/"b") and picks which slot to act on; every store instance is
+  otherwise a complete, independent copy of the same logic — resist the urge to
+  "deduplicate" them into one instance with a side field, since that's exactly the
+  singleton assumption that had to be undone to support two engines at once.
+- **Starting a new game resets `gameStore` *before* spawning any engine, never after.**
+  `EngineControls.start()` calls `startNewGame(controllers)` first, then `startEngine()` on
+  whichever side(s) are engine-controlled. Reversing that order is the exact bug that
+  shipped once already: a late-starting engine's post-ready turn check firing against the
+  *previous* game's leftover position, landing a stale `bestmove` on the fresh game as a
+  spurious "illegal move" error.
 - **`startNewGame` resets the board but deliberately leaves moves locked** (`mode` stays
-  `"replay"`) — only `enterPlayMode()`, called from `startEngine`'s *success* path, actually
-  unlocks `selectSquare`. This fixed a real bug: flipping `mode` to `"play"` optimistically,
-  before knowing whether the engine would start, let a human move pieces on both sides with
-  no engine ever connected if `engine_start` subsequently failed. Every path that ends the
-  engine's ability to keep playing (`engine_start` failure, `engine-exit`, an illegal
-  `bestmove`, a failed `engine_write_line`) goes through `failEngine()`, which pairs setting
-  `status` to `"error"`/`"crashed"` with `gameStore.exitPlayMode()` — do not set one without
-  the other, or the "moves are locked without a live engine" bug comes back in a new shape.
+  `"replay"`); **`enterPlayMode()` is called by `EngineControls.start()` itself, only after
+  every requested engine has confirmed `"ready"`** — never by `startEngine` on its own
+  success. If `startEngine`'s success path called `enterPlayMode()` directly (as it did
+  before two-engine support existed), the *first* of two requested engines to finish
+  starting would unlock moves before anyone knows whether the *other* side's engine will
+  start at all. After entering play mode, `EngineControls.start()` calls `checkTurn()` on
+  both stores explicitly — flipping `mode` alone doesn't append a ply, so neither side's
+  plies-length subscription would otherwise fire to kick off the game's first move.
+  Every path that ends an engine's ability to keep playing (`engine_start` failure,
+  `engine-exit`, an illegal `bestmove`, a failed `engine_write_line`) goes through that
+  side's `failEngine()`, which pairs setting `status` to `"error"`/`"crashed"` with
+  `gameStore.exitPlayMode()` — do not set one without the other, or the "moves are locked
+  without a live engine" bug comes back in a new shape.
 - **`startEngine` guards against re-entrancy.** A double-invocation while a start is
   already in flight would spawn a second process, whose Rust-side startup kills the first
   one mid-flight — surfacing as a misleading "engine process exited unexpectedly" that has
   nothing to do with the engine binary itself. See `NOT_RUNNING` check in `engineStore.ts`.
-- **The selected engine path (and movetime) persist across sessions** via `engineStore`'s
-  zustand `persist` middleware, same pattern as `themeStore`. Only `path`/`movetimeMs` are
-  persisted (`partialize`) — live `status`/`lastInfo`/`errorMessage` must not survive a
-  reload, since they describe a process that no longer exists.
+- **Fully-automated pacing lives inside `maybeRequestEngineMove`, gated on
+  `gameStore.controllers`,** not as a separate coordinator. Each side already computes,
+  right before sending `position`/`go`, whether *both* sides are engine-controlled; if so it
+  tops the delay up to `playbackDelayMs` via `Math.max(0, playbackDelayMs - movetimeMs)`
+  and a `setTimeout`, re-checking `status === "ready"` after the wait (Stop may have landed
+  during it). Never applied in human-vs-engine mode — a human's own reaction time already
+  paces that case, and an artificial delay there would just feel sluggish.
+- **Each side's engine path and movetime persist independently** via `createEngineStore`'s
+  own `persist` key (`chess-board-engine-w` / `chess-board-engine-b`), same pattern as
+  `themeStore`. Only `path`/`movetimeMs` are persisted (`partialize`) — live
+  `status`/`lastInfo`/`errorMessage` must not survive a reload, since they describe a
+  process that no longer exists.
 - **The engine label shows a derived "owner/repo" identifier** (`src/lib/engineIdentifier.ts`),
   not a raw path or bare filename, and the label text itself distinguishes "selected" from
   "running" (`Engine: x` vs `Running: x` vs `Starting: x…`) — do not collapse that back to a
@@ -170,12 +197,15 @@ this file and the human-facing docs.
   private state.
 - One test file per lib/state module: `chessRules.test.ts`, `time.test.ts`, `uci.test.ts`,
   `boardGeometry.test.ts`, `gameStore.test.ts`, `engineIdentifier.test.ts`,
-  `boardPalettes.test.ts`, `engineStore.test.ts` (just the one pure function it exports,
-  `formatEngineExitMessage` — the rest of that module is Tauri-invoke orchestration).
+  `boardPalettes.test.ts`, `engineStore.test.ts` (the one pure function it exports,
+  `formatEngineExitMessage`, plus a smoke test that `useWhiteEngineStore`/
+  `useBlackEngineStore` are fully independent instances — the rest of that module is
+  Tauri-invoke orchestration).
 - Rust: `engine.rs` has unit tests for the pure state-transition helpers (`write_line_locked`,
-  `stop_locked` with no process running, the `stderr_tail` cap) that don't need a real
-  `AppHandle`. The path-validation and actual-process-lifecycle branches are verified
-  manually against the real `chess-engine` binary instead — see the PR that introduced
+  `stop_locked` with no process running, the `stderr_tail` cap, two-slot independence) that
+  don't need a real `AppHandle`. The path-validation and actual-process-lifecycle branches
+  are verified manually against the real `chess-engine` binary instead — see the PR that
+  introduced
   live play for the exact verification steps.
 
 ## Non-goals (for now)

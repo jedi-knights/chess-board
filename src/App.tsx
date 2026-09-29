@@ -43,8 +43,10 @@ function App() {
         </div>
         <aside className="side-panel">
           <EngineControls />
-          <EngineOptions />
-          <AnalysisPanel />
+          <EngineOptions side="w" />
+          <EngineOptions side="b" />
+          <AnalysisPanel side="w" />
+          <AnalysisPanel side="b" />
           <GameLoader />
           <MoveList />
           <MoveLog />

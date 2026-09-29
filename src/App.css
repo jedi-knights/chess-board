@@ -116,6 +116,15 @@ body {
   gap: 0.5em;
 }
 
+.side-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  padding: 0.4em;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .engine-field select,
 .engine-field input {
   color: var(--fg);

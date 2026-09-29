@@ -43,29 +43,30 @@ function BoardSquares({ palette }: { palette: BoardPalette }) {
 
 /**
  * Points the default camera at the board center on mount / camera-mode
- * change, and orients it so the human's own side renders at the bottom of
- * the view. In 2D mode the camera looks straight down (-Y), which is a
+ * change, and orients it so `pov`'s side renders at the bottom of the view
+ * (independent of who's actually playing -- both sides can be engines). In
+ * 2D mode the camera looks straight down (-Y), which is a
  * near-degenerate case for `lookAt`'s default up-vector disambiguation --
  * an explicit horizontal `up` is what actually decides which rank ends up
  * at the bottom of the screen, not the camera's position.
  */
 function LookAtBoardCenter({
   cameraMode,
-  humanColor,
+  pov,
 }: {
   cameraMode: CameraMode;
-  humanColor: "w" | "b";
+  pov: "w" | "b";
 }) {
   const { camera } = useThree();
   useLayoutEffect(() => {
     if (cameraMode === "2d") {
-      camera.up.set(0, 0, humanColor === "w" ? 1 : -1);
+      camera.up.set(0, 0, pov === "w" ? 1 : -1);
     } else {
       camera.up.set(0, 1, 0);
     }
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
-  }, [camera, cameraMode, humanColor]);
+  }, [camera, cameraMode, pov]);
   return null;
 }
 
@@ -77,7 +78,7 @@ interface BoardSceneProps {
 
 export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
   const pieces = fenToPieces(fen);
-  const humanColor = useGameStore((s) => s.humanColor);
+  const pov = useGameStore((s) => s.pov);
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
   const palette = getBoardPalette(useBoardThemeStore((s) => s.palette));
@@ -104,14 +105,14 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
   }, [ply]);
 
   // White's home ranks sit at world -Z, Black's at +Z (see boardGeometry.ts).
-  // Position the camera on the human's own side so their pieces render
-  // closer to them, matching the 2D up-vector flip below.
+  // Position the camera on `pov`'s side so their pieces render closer,
+  // matching the 2D up-vector flip below.
   const cameraPosition: [number, number, number] =
-    cameraMode === "2d" ? [0, 10, 0.001] : humanColor === "w" ? [0, 6, -7] : [0, 6, 7];
+    cameraMode === "2d" ? [0, 10, 0.001] : pov === "w" ? [0, 6, -7] : [0, 6, 7];
 
   return (
     <Canvas
-      key={`${cameraMode}-${humanColor}`}
+      key={`${cameraMode}-${pov}`}
       shadows
       orthographic={cameraMode === "2d"}
       camera={
@@ -124,7 +125,7 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <color attach="background" args={[SCENE_BACKGROUND[theme]]} />
       <ambientLight intensity={theme === "dark" ? 0.45 : 0.6} />
       <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
-      <LookAtBoardCenter cameraMode={cameraMode} humanColor={humanColor} />
+      <LookAtBoardCenter cameraMode={cameraMode} pov={pov} />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
       <BoardSquares palette={palette} />
       <MoveHighlights fen={fen} />

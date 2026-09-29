@@ -45,7 +45,8 @@ Or:     point chess-board at your engine binary, choose a side, and
 - **Load a game three ways**: paste a PGN, paste a bare UCI move list (`e2e4 e7e5 g1f3 ...`), or use the native "Open PGN file…" dialog.
 - **Step through ply by ply** — forward/back buttons, jump to start/end, autoplay, or click any move directly in the move list to jump to it.
 - **Move log transcript** with a live wall clock and, when the source PGN carries lichess/chess.com-style `%clk` or ICC-style `%emt` annotations, how long each side took on each move.
-- **Play a live game against any UCI engine** — choose an engine binary, pick a side, click a piece to see its legal destinations highlighted, click one to move. The engine replies automatically; no manual UCI typing.
+- **Play a live game against any UCI engine, or watch two engines play each other** — set each side independently to Human or an engine binary (the same binary twice, or two different ones). Human sides play by clicking a piece to see its legal destinations highlighted, then clicking one to move; engine sides reply automatically.
+- **Human-watchable pacing for fully-automated games** — when both sides are engines, a configurable minimum pace between moves (default 1500ms) tops up a low `movetime` so the game doesn't blur past too fast to follow. Never applied when a human is playing either side.
 - **Remembers your last engine** across restarts, and labels it with a GitHub-style `owner/repo` identifier (e.g. `jedi-knights/chess-engine`) instead of a raw file path — the label also makes clear whether that engine is just selected or actually running.
 - **Crash messages include the engine's own stderr output**, not just "exited unexpectedly" — and clicking **Stop** actually dismisses a displayed error instead of leaving it stuck.
 - **Search history panel** — every `info` line from the engine's current search (one per completed depth), not just the latest, so you can see how a search actually converged.
@@ -77,7 +78,7 @@ This opens the app window.
 
 **To replay a game:** paste a PGN or a bare UCI move list into the text box, click **Load**, then use the playback controls under the board — `|<` `<` `Play/Pause` `>` `>|` — or click any move in the move list to jump straight to it.
 
-**To play against an engine:** click **Choose engine binary…** and pick your compiled UCI engine (chess-board remembers this choice across restarts, so you only need to do this once per engine), choose **Play as** White or Black, optionally adjust **Movetime (ms)**, then **Start game**. Click one of your pieces — its legal destination squares highlight — then click a highlighted square to move. The engine replies on its own; watch the **Status** line for its depth/score while it's thinking.
+**To play against an engine, or watch two engines play each other:** for each of **White** and **Black**, choose **Human** or **Engine**. For an engine side, click **Choose engine binary…** and pick your compiled UCI engine (chess-board remembers this choice across restarts, so you only need to do this once per engine), and adjust that side's **Movetime (ms)** if you like. Click **Start game**. Human sides play by clicking one of their pieces — its legal destination squares highlight — then clicking a highlighted square; engine sides reply on their own. If both sides are engines, a **Playback speed** field appears — see Configuration for what it does.
 
 Toggle **View: 2D / View: 3D** in the header to switch camera modes, and **Theme** to cycle system → light → dark.
 
@@ -109,9 +110,11 @@ No PGN formatting needed — chess-board applies each UCI move in order and show
 
 The move log now shows how long each side took per move, derived from the clock deltas and the game's own time control. **Gotcha:** this is only as accurate as the source annotations — a PGN with no `%clk`/`%emt` comments (like the one in Example 1) always shows `—`.
 
-**4. Play a live game against your own engine.** Build your UCI engine (e.g. `jedi-knights/chess-engine`'s `make` produces `./engine`), then in chess-board: **Choose engine binary…** → select that compiled binary → **Play as** White → **Start game**. Click a pawn, click one of its highlighted destination squares — the engine replies within your configured movetime, and the move log/board update automatically. **Gotcha:** the engine process is spawned directly (no shell involved), so point the picker at the actual compiled binary, not a shell script or `make` target.
+**4. Play a live game against your own engine.** Build your UCI engine (e.g. `jedi-knights/chess-engine`'s `make` produces `./engine`), then in chess-board: set **White** to Human, set **Black** to Engine → **Choose engine binary…** → select that compiled binary → **Start game**. Click a pawn, click one of its highlighted destination squares — the engine replies within its configured movetime, and the move log/board update automatically. **Gotcha:** the engine process is spawned directly (no shell involved), so point the picker at the actual compiled binary, not a shell script or `make` target.
 
-**5. Toggle an engine option mid-session.** `jedi-knights/chess-engine` advertises two options after the UCI handshake: `UseNNUE` (checkbox) and `EvalFile` (path). Once you've started that engine, the **Engine options** panel shows both — set `EvalFile` to the path of a `.jnn1` network, then check `UseNNUE`, and its next move uses the neural-net evaluation instead of the classical one. **Gotcha:** order matters for this specific engine (set `EvalFile` before checking `UseNNUE`) — chess-board sends whatever you change, in the order you change it, with no per-engine sequencing logic of its own.
+**5. Watch two engines play each other.** Set both **White** and **Black** to Engine — the same binary for both, or two different ones (e.g. two snapshots of your engine from different commits, to compare strength). **Start game**, then just watch: moves alternate automatically, paced by **Playback speed** so the game stays watchable even at a low movetime.
+
+**6. Toggle an engine option mid-session.** `jedi-knights/chess-engine` advertises two options after the UCI handshake: `UseNNUE` (checkbox) and `EvalFile` (path). Once you've started that engine, the **Engine options** panel shows both — set `EvalFile` to the path of a `.jnn1` network, then check `UseNNUE`, and its next move uses the neural-net evaluation instead of the classical one. **Gotcha:** order matters for this specific engine (set `EvalFile` before checking `UseNNUE`) — chess-board sends whatever you change, in the order you change it, with no per-engine sequencing logic of its own.
 
 ## Configuration
 
@@ -122,7 +125,8 @@ No environment variables or config files. Two things worth knowing about what th
 | Content-Security-Policy | Set explicitly in `src-tauri/tauri.conf.json` (`default-src 'self'`, no remote script/style sources) | The webview can't load arbitrary remote content |
 | File-read scope | `src-tauri/capabilities/default.json` grants read access only under `$HOME`, `$DOCUMENT`, `$DOWNLOAD`, `$DESKTOP` — not the whole filesystem | The "Open PGN file…" dialog can only read files under your common user directories |
 | Engine process spawning | **No** `shell:execute` capability is granted. `engine_start` (`src-tauri/src/engine.rs`) spawns the picked binary directly via `std::process::Command`, after checking the path is a real file | The engine path is arbitrary and chosen at runtime through the same native file dialog used for opening PGNs — that dialog is the trust boundary, not a pre-declared shell allowlist (which the `shell` plugin's capability model isn't built for anyway) |
-| Debug log | A plain-text `debug.log` in your OS's app log directory (e.g. `~/Library/Logs/com.jediknights.chessboard/debug.log` on macOS) — engine spawn/exit events (including captured stderr) from Rust, plus move/failure events from the frontend | Gives enough of a timeline to debug a crash after the fact, without needing DevTools open at the time. Cleared on every app launch and every "Start game" click, so it never grows across a long session |
+| Debug log | A plain-text `debug.log` in your OS's app log directory (e.g. `~/Library/Logs/com.jediknights.chessboard/debug.log` on macOS) — engine spawn/exit events (including captured stderr) from Rust, plus move/failure events from the frontend, prefixed `[w]`/`[b]` per side | Gives enough of a timeline to debug a crash after the fact, without needing DevTools open at the time. Cleared on every app launch and every "Start game" click, so it never grows across a long session |
+| Playback speed | Only shown when both sides are set to Engine. `topUp = max(0, playbackSpeed - thatSide's movetime)` is added before requesting each automated move | Tops the pace up to a human-watchable minimum without ever slowing down a game that's already paced by a generous `movetime` — and it's never applied at all when a human is playing either side |
 
 ## Development
 
@@ -154,10 +158,12 @@ src/
                            plus a pulsing check/checkmate ring on the king
     PlaybackControls.tsx    step/play/pause/jump-to-start/end + autoplay
     GameLoader.tsx          paste-PGN / paste-UCI textarea + "Open PGN file…"
-    EngineControls.tsx      choose engine binary, pick a side, movetime,
-                           start/stop a live game
-    EngineOptions.tsx        one control per UCI `option` the engine advertised
-    AnalysisPanel.tsx        scrolling history of the current search's `info` lines
+    EngineControls.tsx      per-side Human/Engine picker, movetime, playback
+                           speed (fully-automated games), start/stop
+    EngineOptions.tsx        one control per UCI `option` a side's engine
+                           advertised (rendered once per side)
+    AnalysisPanel.tsx        scrolling search-info history (rendered once
+                           per side)
     ThemeToggle.tsx, WallClock.tsx
   hooks/
     useAppliedTheme.ts      resolves system/light/dark and applies it
@@ -172,16 +178,22 @@ src/
     time.ts                 duration/clock formatting
     engineIdentifier.ts     path -> "owner/repo"-style label for the UI
   state/
-    gameStore.ts            loaded/live game, current ply, camera mode,
+    gameStore.ts            loaded/live game, current ply, per-side
+                           controllers (human|engine), pov, playback delay,
                            click-to-move selection state
-    engineStore.ts          engine connection status, movetime, watches
-                           gameStore to send position/go on the engine's turn;
-                           selected path + movetime persist across restarts
+    engineStore.ts          createEngineStore(side) factory -- two
+                           independent instances (useWhiteEngineStore,
+                           useBlackEngineStore), each watching gameStore to
+                           send position/go on its own side's turn; each
+                           side's path + movetime persist independently
     themeStore.ts           theme preference, persisted
 src-tauri/
   src/lib.rs                Tauri Builder + fs/dialog/opener plugins
-  src/engine.rs             spawns/stops the UCI engine process, pipes its
-                           stdout as events — no UCI parsing here, see above
+  src/engine.rs             spawns/stops a UCI engine process per side
+                           (WhiteEngine/BlackEngine, two independent slots),
+                           pipes stdout/exit as side-scoped events — no UCI
+                           parsing here, see above
+  src/debug_log.rs          on-disk debug.log (see Configuration)
   capabilities/default.json scoped permissions (see Configuration)
   tauri.conf.json           explicit CSP
 ```

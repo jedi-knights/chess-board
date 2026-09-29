@@ -7,7 +7,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(engine::new_shared_state())
+        .manage(engine::WhiteEngine(engine::new_shared_state()))
+        .manage(engine::BlackEngine(engine::new_shared_state()))
         .setup(|app| {
             // A fresh debug.log per session, per the mandate that it must
             // never grow unbounded across a long-running dev session.
