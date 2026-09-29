@@ -1,0 +1,257 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Light is the default; [data-theme] (set by useAppliedTheme) overrides both ways. */
+:root,
+:root[data-theme="light"] {
+  --bg: #f6f6f6;
+  --fg: #0f0f0f;
+  --panel-bg: #ffffff;
+  --border: #d8d8d8;
+  --accent: #396cd8;
+  --active-bg: #e8e8e8;
+}
+
+:root[data-theme="dark"] {
+  --bg: #202225;
+  --fg: #f2f2f2;
+  --panel-bg: #2b2d31;
+  --border: #40434a;
+  --accent: #6ba1ff;
+  --active-bg: #3a3d44;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--fg);
+  background-color: var(--bg);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5em 1em;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.2em;
+}
+
+.app-header-controls {
+  display: flex;
+  gap: 0.5em;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.board-panel {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.board-panel > :first-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.side-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+  padding: 1em;
+  border-left: 1px solid var(--border);
+  background-color: var(--panel-bg);
+  overflow-y: auto;
+}
+
+.game-loader textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: monospace;
+  color: var(--fg);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5em;
+}
+
+.game-loader-actions {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.5em;
+}
+
+.load-error {
+  color: #d9534f;
+}
+
+.move-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.move-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.15em 0;
+}
+
+.move-number {
+  color: var(--border);
+  min-width: 2em;
+}
+
+.move-list-empty {
+  color: var(--border);
+}
+
+.move-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.move-log-header h2 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.wall-clock {
+  font-family: monospace;
+  color: var(--border);
+}
+
+.move-log-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.move-log-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  text-align: left;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0.2em 0.4em;
+}
+
+.move-log-index {
+  color: var(--border);
+  min-width: 2em;
+}
+
+.move-log-side {
+  min-width: 4em;
+  font-weight: 500;
+}
+
+.move-log-san {
+  min-width: 3.5em;
+  font-family: monospace;
+}
+
+.move-log-time {
+  margin-left: auto;
+  color: var(--border);
+  font-family: monospace;
+}
+
+.move-log-entry.active .move-log-row {
+  background-color: var(--active-bg);
+}
+
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.5em;
+  border-top: 1px solid var(--border);
+}
+
+.ply-counter {
+  margin-left: auto;
+  font-family: monospace;
+}
+
+input,
+button,
+.move {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 0.5em 1em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--fg);
+  background-color: var(--panel-bg);
+  transition: border-color 0.2s;
+  cursor: pointer;
+}
+
+button:hover,
+.move:hover {
+  border-color: var(--accent);
+}
+
+button:active,
+.move:active {
+  border-color: var(--accent);
+  background-color: var(--active-bg);
+}
+
+.move.active {
+  border-color: var(--accent);
+  background-color: var(--active-bg);
+  font-weight: 700;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+input,
+button {
+  outline: none;
+}
