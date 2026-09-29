@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isTerminalStatus, parseLichessAccountEvent, parseLichessLine } from "./lichess";
+import {
+  isTerminalStatus,
+  parseBotOnlineList,
+  parseLichessAccountEvent,
+  parseLichessLine,
+} from "./lichess";
 
 describe("parseLichessLine", () => {
   it("parses a gameFull line via its nested state", () => {
@@ -128,5 +133,46 @@ describe("parseLichessAccountEvent", () => {
 
   it("returns null for malformed JSON", () => {
     expect(parseLichessAccountEvent("not json")).toBeNull();
+  });
+});
+
+describe("parseBotOnlineList", () => {
+  it("parses each NDJSON line into a bot summary", () => {
+    const raw = [
+      JSON.stringify({
+        username: "maia1",
+        title: "BOT",
+        perfs: { bullet: { rating: 1669 }, blitz: { rating: 1378 } },
+      }),
+      JSON.stringify({ username: "maia5", title: "BOT", perfs: { rapid: { rating: 1726 } } }),
+    ].join("\n");
+
+    expect(parseBotOnlineList(raw)).toEqual([
+      { username: "maia1", title: "BOT", ratings: { bullet: 1669, blitz: 1378 } },
+      { username: "maia5", title: "BOT", ratings: { rapid: 1726 } },
+    ]);
+  });
+
+  it("defaults title to null and ratings to empty when absent", () => {
+    const raw = JSON.stringify({ username: "somebot" });
+    expect(parseBotOnlineList(raw)).toEqual([
+      { username: "somebot", title: null, ratings: {} },
+    ]);
+  });
+
+  it("skips blank lines and malformed entries without dropping the rest", () => {
+    const raw = [
+      JSON.stringify({ username: "good1" }),
+      "",
+      "not json",
+      JSON.stringify({ noUsername: true }),
+      JSON.stringify({ username: "good2" }),
+    ].join("\n");
+
+    expect(parseBotOnlineList(raw).map((b) => b.username)).toEqual(["good1", "good2"]);
+  });
+
+  it("returns an empty list for an empty body", () => {
+    expect(parseBotOnlineList("")).toEqual([]);
   });
 });

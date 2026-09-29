@@ -35,7 +35,9 @@ pub fn run() {
             lichess::lichess_stream_events,
             lichess::lichess_stop_events,
             lichess::lichess_challenge_accept,
-            lichess::lichess_bot_upgrade
+            lichess::lichess_bot_upgrade,
+            lichess::lichess_bot_online,
+            lichess::lichess_challenge_bot
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
