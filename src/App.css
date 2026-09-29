@@ -150,6 +150,28 @@ body {
   font-size: 1em;
 }
 
+.lichess-controls h3 {
+  margin: 0.5em 0 0;
+  font-size: 0.9em;
+}
+
+.lichess-bot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 10em;
+  overflow-y: auto;
+}
+
+.lichess-bot-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  padding: 0.2em 0;
+  font-size: 0.9em;
+}
+
 .lichess-controls > input {
   color: var(--fg);
   background-color: var(--bg);

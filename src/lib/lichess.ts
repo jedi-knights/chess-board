@@ -130,3 +130,55 @@ export function parseLichessAccountEvent(raw: string): LichessAccountEvent | nul
 
   return null;
 }
+
+export interface LichessBotSummary {
+  username: string;
+  title: string | null;
+  /** Rating per perf (e.g. "bullet", "blitz", "rapid"), when present. */
+  ratings: Record<string, number>;
+}
+
+function parseBotSummary(line: string): LichessBotSummary | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof json !== "object" || json === null) return null;
+  const obj = json as Record<string, unknown>;
+  if (typeof obj.username !== "string") return null;
+
+  const ratings: Record<string, number> = {};
+  if (typeof obj.perfs === "object" && obj.perfs !== null) {
+    for (const [perf, value] of Object.entries(obj.perfs as Record<string, unknown>)) {
+      if (typeof value !== "object" || value === null) continue;
+      const rating = (value as Record<string, unknown>).rating;
+      if (typeof rating === "number") ratings[perf] = rating;
+    }
+  }
+
+  return {
+    username: obj.username,
+    title: typeof obj.title === "string" ? obj.title : null,
+    ratings,
+  };
+}
+
+/**
+ * Parses the NDJSON body of `GET /api/bot/online` into a list of bot
+ * accounts. Skips any line that doesn't parse or has no username, rather
+ * than failing the whole list -- one malformed entry shouldn't hide every
+ * other bot. The line count itself is bounded server-side by the `nb`
+ * request parameter (see lichess.rs's MAX_BOTS_LISTED), not here.
+ */
+export function parseBotOnlineList(raw: string): LichessBotSummary[] {
+  const bots: LichessBotSummary[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const bot = parseBotSummary(trimmed);
+    if (bot) bots.push(bot);
+  }
+  return bots;
+}
