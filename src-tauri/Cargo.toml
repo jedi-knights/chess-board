@@ -28,7 +28,19 @@ tauri-plugin-fs = "2"
 # and more portable bundle across the desktop targets this app ships to.
 # Async client, driven by tauri's own tokio runtime via `async fn` commands
 # -- no separate blocking client/runtime needed.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# Only for `.next()` on reqwest's byte stream while reading the NDJSON game
+# stream line by line -- not pulling in the full `futures` crate for it.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Just for tokio::spawn/JoinHandle to run the game-stream reader alongside
+# an async command -- schedules onto tauri's own ambient runtime, not a
+# second one, so no rt-multi-thread/full feature is needed here.
+tokio = { version = "1", features = ["rt"] }
+# Cross-platform OS keychain (macOS Keychain / Windows Credential Manager /
+# Linux Secret Service) for the Lichess personal access token -- deliberately
+# not persisted via zustand's localStorage-backed store, since it's a bearer
+# credential, not a UI preference. See owasp-top-10.md A04.
+keyring = "3"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

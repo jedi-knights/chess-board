@@ -137,6 +137,50 @@ body {
   margin: 0;
 }
 
+.lichess-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding-bottom: 1em;
+  border-bottom: 1px solid var(--border);
+}
+
+.lichess-controls h2 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.lichess-controls > input {
+  color: var(--fg);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3em;
+}
+
+.lichess-token-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.lichess-token-field input {
+  flex: 1;
+  box-sizing: border-box;
+  color: var(--fg);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3em;
+}
+
+.lichess-token-status {
+  flex: 1;
+  color: var(--border);
+  font-style: italic;
+  margin: 0;
+}
+
 .engine-options {
   display: flex;
   flex-direction: column;
