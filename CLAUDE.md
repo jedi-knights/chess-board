@@ -18,6 +18,15 @@ pnpm tauri build       # full desktop bundle
 
 Rust side (`src-tauri/`): `cargo check` / `cargo build` from within `src-tauri/`.
 
+## Workflow
+
+**All changes land on `main` via a pull request — never commit directly to `main`.**
+Branch first (`git checkout -b <type>/<short-desc>` off a freshly pulled `main`), commit
+there, push, open a PR, and merge through GitHub. This holds even for small fixes and even
+though `main` currently has no branch-protection ruleset configured — the rule is "always
+open a PR," not "open a PR because the branch is protected." If you find yourself with
+staged changes and `main` checked out, stop and move them to a branch before committing.
+
 ## Layout
 
 See README.md's Development > Layout section — kept in one place to avoid drift between
