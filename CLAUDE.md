@@ -112,6 +112,15 @@ this file and the human-facing docs.
   that order is the exact bug that shipped once already: `startEngine`'s post-ready turn
   check can fire against the *previous* game's leftover position, and the resulting
   (stale) `bestmove` lands on the fresh game as a spurious "illegal move" error.
+- **`startNewGame` resets the board but deliberately leaves moves locked** (`mode` stays
+  `"replay"`) — only `enterPlayMode()`, called from `startEngine`'s *success* path, actually
+  unlocks `selectSquare`. This fixed a real bug: flipping `mode` to `"play"` optimistically,
+  before knowing whether the engine would start, let a human move pieces on both sides with
+  no engine ever connected if `engine_start` subsequently failed. Every path that ends the
+  engine's ability to keep playing (`engine_start` failure, `engine-exit`, an illegal
+  `bestmove`, a failed `engine_write_line`) goes through `failEngine()`, which pairs setting
+  `status` to `"error"`/`"crashed"` with `gameStore.exitPlayMode()` — do not set one without
+  the other, or the "moves are locked without a live engine" bug comes back in a new shape.
 - **`startEngine` guards against re-entrancy.** A double-invocation while a start is
   already in flight would spawn a second process, whose Rust-side startup kills the first
   one mid-flight — surfacing as a misleading "engine process exited unexpectedly" that has

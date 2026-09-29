@@ -60,9 +60,19 @@ function maybeRequestEngineMove() {
   const moves = game.plies.map((p) => p.uci);
   invoke("engine_write_line", { line: buildPositionCommand(moves) })
     .then(() => invoke("engine_write_line", { line: buildGoCommand(engine.movetimeMs) }))
-    .catch((err) => {
-      useEngineStore.setState({ status: "error", errorMessage: String(err) });
-    });
+    .catch((err) => failEngine("error", String(err)));
+}
+
+/**
+ * Every path that ends the engine's ability to keep playing goes through
+ * here, so "the engine is no longer trustworthy" and "moves are locked
+ * again" can never drift apart -- see gameStore.exitPlayMode's own comment
+ * for the bug this fixes (mode could stay "play" with no live engine
+ * behind it, letting a human move both sides with nothing checking them).
+ */
+function failEngine(status: "error" | "crashed", message: string) {
+  useEngineStore.setState({ status, errorMessage: message });
+  useGameStore.getState().exitPlayMode();
 }
 
 function applyEngineBestMove(move: string) {
@@ -70,10 +80,11 @@ function applyEngineBestMove(move: string) {
   const to = move.slice(2, 4);
   const promotion = move.length > 4 ? move.slice(4, 5) : undefined;
   const applied = useGameStore.getState().attemptMove(from, to, promotion);
-  useEngineStore.setState({
-    status: applied ? "ready" : "error",
-    errorMessage: applied ? null : `engine returned an illegal move: ${move}`,
-  });
+  if (applied) {
+    useEngineStore.setState({ status: "ready" });
+  } else {
+    failEngine("error", `engine returned an illegal move: ${move}`);
+  }
 }
 
 let listenersInstalled = false;
@@ -104,13 +115,12 @@ function installListenersOnce() {
   });
 
   void listen<number | null>("engine-exit", (event) => {
-    useEngineStore.setState({
-      status: "crashed",
-      errorMessage:
-        event.payload !== null
-          ? `engine process exited (code ${event.payload})`
-          : "engine process exited unexpectedly",
-    });
+    failEngine(
+      "crashed",
+      event.payload !== null
+        ? `engine process exited (code ${event.payload})`
+        : "engine process exited unexpectedly",
+    );
   });
 
   useGameStore.subscribe((state, prevState) => {
@@ -142,7 +152,7 @@ export const useEngineStore = create<EngineStoreState>()(
           set((state) => ({ optionValues: { ...state.optionValues, [name]: value } }));
         }
         invoke("engine_write_line", { line: buildSetOptionCommand(name, value) }).catch(
-          (err) => set({ status: "error", errorMessage: String(err) }),
+          (err) => failEngine("error", String(err)),
         );
       },
 
@@ -171,9 +181,13 @@ export const useEngineStore = create<EngineStoreState>()(
           // change the ready/turn-orchestration timing at all.
           void invoke("engine_write_line", { line: "uci" });
           set({ status: "ready" });
+          // Only unlock moves once the engine has actually confirmed it
+          // started -- gameStore.startNewGame (called before this) resets
+          // the board but deliberately leaves moves locked until now.
+          useGameStore.getState().enterPlayMode();
           maybeRequestEngineMove();
         } catch (err) {
-          set({ status: "error", errorMessage: String(err) });
+          failEngine("error", String(err));
         }
       },
 
@@ -182,6 +196,7 @@ export const useEngineStore = create<EngineStoreState>()(
           await invoke("engine_stop");
         } finally {
           set({ status: "idle", lastInfo: null, searchInfoHistory: [] });
+          useGameStore.getState().exitPlayMode();
         }
       },
     }),

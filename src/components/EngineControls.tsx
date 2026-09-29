@@ -44,6 +44,9 @@ export function EngineControls() {
     // reports ready -- otherwise, on a restart, the engine's post-ready
     // turn check can fire against the previous game's leftover position
     // and its (stale) reply lands on the fresh game as an "illegal move".
+    // startNewGame deliberately leaves moves locked (mode stays "replay");
+    // startEngine only unlocks them (enterPlayMode) once it has confirmed
+    // the engine actually started -- see gameStore.startNewGame's comment.
     startNewGame(humanColor);
     await startEngine(path);
   }

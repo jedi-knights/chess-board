@@ -32,6 +32,8 @@ interface GameState {
   setLoadError: (message: string | null) => void;
 
   startNewGame: (humanColor: "w" | "b") => void;
+  enterPlayMode: () => void;
+  exitPlayMode: () => void;
   selectSquare: (square: string) => void;
   clearSelection: () => void;
   /** Validates and applies a move; returns whether it succeeded. Used for
@@ -87,12 +89,21 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       plies: [],
       ply: 0,
-      mode: "play",
+      // Deliberately stays "replay" (moves locked) here -- flipping to
+      // "play" is a separate step (enterPlayMode), called only once the
+      // engine actually confirms it started. Flipping it here, optimistically,
+      // is exactly what let a human move pieces around with no engine
+      // backing the game at all when engine_start subsequently failed.
+      mode: "replay",
       humanColor,
       selectedSquare: null,
       legalDestinationSquares: [],
       loadError: null,
     }),
+
+  enterPlayMode: () => set({ mode: "play" }),
+
+  exitPlayMode: () => set({ mode: "replay", selectedSquare: null, legalDestinationSquares: [] }),
 
   clearSelection: () => set({ selectedSquare: null, legalDestinationSquares: [] }),
 
