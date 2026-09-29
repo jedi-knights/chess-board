@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { parsePgn, parseUciMoves } from "../lib/chessRules";
@@ -14,6 +15,8 @@ function loadFromText(source: string): ReturnType<typeof parsePgn> {
 
 export function GameLoader() {
   const [text, setText] = useState("");
+  const [lichessInput, setLichessInput] = useState("");
+  const [lichessLoading, setLichessLoading] = useState(false);
   const loadGame = useGameStore((s) => s.loadGame);
   const loadError = useGameStore((s) => s.loadError);
   const setLoadError = useGameStore((s) => s.setLoadError);
@@ -37,6 +40,21 @@ export function GameLoader() {
     load(contents);
   }
 
+  async function loadFromLichess() {
+    setLichessLoading(true);
+    try {
+      const pgn = await invoke<string>("lichess_export_pgn", {
+        gameIdOrUrl: lichessInput,
+      });
+      setText(pgn);
+      load(pgn);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLichessLoading(false);
+    }
+  }
+
   return (
     <div className="game-loader">
       <textarea
@@ -50,6 +68,17 @@ export function GameLoader() {
           Load
         </button>
         <button onClick={openFile}>Open PGN file…</button>
+      </div>
+      <div className="game-loader-lichess">
+        <input
+          type="text"
+          value={lichessInput}
+          onChange={(e) => setLichessInput(e.target.value)}
+          placeholder="Lichess game id or URL, e.g. https://lichess.org/abcd1234"
+        />
+        <button onClick={loadFromLichess} disabled={!lichessInput.trim() || lichessLoading}>
+          {lichessLoading ? "Loading…" : "Load from Lichess"}
+        </button>
       </div>
       {loadError && <p className="load-error">{loadError}</p>}
     </div>

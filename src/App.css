@@ -212,6 +212,22 @@ body {
   margin-top: 0.5em;
 }
 
+.game-loader-lichess {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.5em;
+}
+
+.game-loader-lichess input {
+  flex: 1;
+  box-sizing: border-box;
+  color: var(--fg);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4em;
+}
+
 .load-error {
   color: #d9534f;
   white-space: pre-wrap;
