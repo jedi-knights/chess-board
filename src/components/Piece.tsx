@@ -7,7 +7,11 @@ import { useGameStore } from "../state/gameStore";
 import { usePieceStyleStore } from "../state/pieceStyleStore";
 
 const WHITE_MATERIAL_COLOR = "#f5f0e6";
-const BLACK_MATERIAL_COLOR = "#2b2b2b";
+// Real "black" chess pieces are ebonized/dark-stained wood, not flat
+// black paint -- and #2b2b2b was reflecting so little light that pieces
+// read as nearly featureless silhouettes even with correct geometry.
+// Lightened, paired with BoardScene's new fill light.
+const BLACK_MATERIAL_COLOR = "#3a3a3a";
 const MOVE_ANIMATION_MS = 220;
 
 /**
