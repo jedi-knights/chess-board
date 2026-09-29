@@ -260,7 +260,14 @@ function PieceBody({
 
 /**
  * An actual horse-head profile (arched neck, poll, ear, forehead, nose,
- * mouth, jaw, throat), extruded to a thin slab -- not two rotated boxes.
+ * mouth, jaw, throat), extruded with real depth -- not two rotated boxes,
+ * and not a thin flat cutout either. Real carved knight heads have
+ * noticeable volume (see reference photos); a thin slab (the original
+ * 0.09 depth) reads as a recognizable horse only from a narrow range of
+ * viewing angles and looks like a blank blob from others, since a nearly
+ * edge-on view of a thin panel loses the silhouette entirely. Depth 0.16
+ * roughly matches the neck cylinder's own diameter, so the head reads as
+ * a solid form rather than a plane from more of the board's viewing angles.
  * A dedicated component so `useMemo` runs unconditionally per React's
  * rules of hooks (PieceBody's switch can't call it directly in one case).
  * `segments` controls how many facets approximate the shape's curves
@@ -288,9 +295,9 @@ function KnightHead({ color, segments }: { color: string; segments: number }) {
   }, []);
 
   return (
-    <mesh position={[0, 0.18, -0.045]} castShadow>
+    <mesh position={[0, 0.18, -0.08]} castShadow>
       <extrudeGeometry
-        args={[shape, { depth: 0.09, bevelEnabled: false, curveSegments: segments }]}
+        args={[shape, { depth: 0.16, bevelEnabled: false, curveSegments: segments }]}
       />
       <meshStandardMaterial color={color} />
     </mesh>
