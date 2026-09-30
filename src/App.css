@@ -91,6 +91,39 @@ body {
   overflow-y: auto;
 }
 
+.side-tabs {
+  display: flex;
+  gap: 0.25em;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: -0.5em;
+}
+
+.side-tab {
+  flex: 1;
+  padding: 0.5em;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--fg);
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+.side-tab.active {
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.side-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+}
+
+.side-tab-panel.hidden {
+  display: none;
+}
+
 .engine-controls {
   display: flex;
   flex-direction: column;
