@@ -260,6 +260,52 @@ put it in the bot slot instead`. No POST goes out.
 correct slot), verify play still works. Confirms the cache-invalidate
 paths in `lichess_token_set`/`_clear`.
 
+## 7. OAuth 2.0 + PKCE sign-in
+
+**Exercises:** PR 7 (`lichess_oauth_login`, loopback listener, PKCE
+verifier + challenge + state, token exchange).
+
+**Setup:**
+
+1. Clear the human-slot token if one is set (Clear token button).
+2. In **Play on Lichess** mode, click **Sign in with Lichess**.
+
+**Expected:**
+
+- The button label flips to "Waiting for browser…".
+- Your default browser opens to `https://lichess.org/oauth?...` with
+  `client_id=com.jediknights.chessboard`, `scope=board%3Aplay`, a
+  `code_challenge`, and a `state`.
+- Log in / approve. The tab redirects to `http://127.0.0.1:<port>/callback?code=...&state=...`
+  and shows "Signed in to Lichess — you can close this window".
+- Back in the app: the button snaps back to normal, the "Token saved
+  in the OS keychain — verified as `<username>`" line appears.
+- `debug.log` shows the flow end-to-end:
+  - `[lichess-oauth] authorize on :<port> for Human`
+  - `[lichess-oauth] signed in as <username> (isBot=false) in slot Human`
+- Now start a seek or AI challenge — plays as normal (the OAuth token
+  is functionally identical to a PAT with the same scope).
+
+**Repeat for the bot slot** in Engine-vs-Lichess mode with a BOT
+account. Same shape; the scope should be `bot:play` + `challenge:write`.
+
+**Fails if:**
+
+- The browser tab doesn't open (opener plugin failure).
+- The browser tab shows a 400 (state mismatch — should never happen
+  on a legitimate flow; suggests a browser extension or middlebox
+  interfered).
+- `debug.log` shows `OAuth flow timed out after 300s` — you took too
+  long. Just click Sign in again.
+- The success HTML shows in the browser but the app's UI never
+  updates. Check that the loopback port matched between the
+  authorize URL and the callback (in `debug.log`).
+
+**Fair-play spot-check:** Sign in with a BOT account into the human
+slot. The verify call should immediately show the "BOT account" refusal
+banner (same as scenario 6b's paste-token case). Confirms the OAuth
+path funnels into the same slot-matches guard.
+
 ## Cross-cutting checks
 
 Any time a scenario finishes cleanly, glance at:

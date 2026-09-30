@@ -143,6 +143,34 @@ describe("refreshHasToken / setToken / clearToken", () => {
   });
 });
 
+describe("oauthLogin", () => {
+  it("stores the token and populates verifiedAccount on success", async () => {
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_oauth_login"
+        ? Promise.resolve({ id: "alice", username: "Alice", isBot: false })
+        : Promise.resolve(undefined),
+    );
+    await useLichessStore.getState().oauthLogin();
+    const state = useLichessStore.getState();
+    expect(state.hasToken).toBe(true);
+    expect(state.verifiedAccount).toEqual({ id: "alice", username: "Alice", isBot: false });
+    expect(state.verifyError).toBeNull();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_oauth_login", { slot: "human" });
+  });
+
+  it("surfaces a Rust-side error in verifyError without touching hasToken", async () => {
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_oauth_login"
+        ? Promise.reject(new Error("OAuth flow timed out"))
+        : Promise.resolve(undefined),
+    );
+    await useLichessStore.getState().oauthLogin();
+    const state = useLichessStore.getState();
+    expect(state.hasToken).toBe(false);
+    expect(state.verifyError).toContain("timed out");
+  });
+});
+
 describe("verifyAccount", () => {
   it("populates verifiedAccount on success and clears any stale error", async () => {
     mockedInvoke.mockResolvedValueOnce({ id: "alice", username: "Alice", isBot: false });

@@ -1,6 +1,7 @@
 mod debug_log;
 mod engine;
 mod lichess;
+mod lichess_oauth;
 mod menu;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -53,6 +54,7 @@ pub fn run() {
             lichess::lichess_token_has,
             lichess::lichess_token_clear,
             lichess::lichess_verify_account,
+            lichess::lichess_oauth_login,
             lichess::lichess_stream_game,
             lichess::lichess_stop_game,
             lichess::lichess_make_move,

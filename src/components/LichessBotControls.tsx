@@ -32,6 +32,8 @@ export function LichessBotControls() {
   const setToken = useLichessBotStore((s) => s.setToken);
   const clearToken = useLichessBotStore((s) => s.clearToken);
   const verifyAccount = useLichessBotStore((s) => s.verifyAccount);
+  const oauthLogin = useLichessBotStore((s) => s.oauthLogin);
+  const [oauthInFlight, setOauthInFlight] = useState(false);
 
   const enginePath = useLichessBotStore((s) => s.enginePath);
   const setEnginePath = useLichessBotStore((s) => s.setEnginePath);
@@ -83,6 +85,15 @@ export function LichessBotControls() {
     await verifyAccount();
   }
 
+  async function signIn() {
+    setOauthInFlight(true);
+    try {
+      await oauthLogin();
+    } finally {
+      setOauthInFlight(false);
+    }
+  }
+
   async function upgrade() {
     if (await upgradeToBotAccount()) {
       setConfirmText("");
@@ -132,17 +143,28 @@ export function LichessBotControls() {
         engines — never your regular human account.
       </p>
       {!hasToken ? (
-        <div className="lichess-token-field">
-          <input
-            type="password"
-            value={tokenInput}
-            onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="Lichess token for the BOT account (bot:play + challenge:write)"
-          />
-          <button onClick={saveToken} disabled={!tokenInput.trim()}>
-            Save bot token
+        <>
+          <button onClick={signIn} disabled={oauthInFlight}>
+            {oauthInFlight ? "Waiting for browser…" : "Sign in with Lichess (BOT account)"}
           </button>
-        </div>
+          <p className="hint">
+            Opens a browser tab to Lichess so you can approve the bot:play and
+            challenge:write scopes. Or paste a token directly below — either way, it's
+            stored in your OS keychain, not in the app.
+          </p>
+          <div className="lichess-token-field">
+            <input
+              type="password"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="Personal access token (bot:play + challenge:write)"
+              disabled={oauthInFlight}
+            />
+            <button onClick={saveToken} disabled={!tokenInput.trim() || oauthInFlight}>
+              Save bot token
+            </button>
+          </div>
+        </>
       ) : (
         <div className="lichess-token-field">
           <p className="lichess-token-status">

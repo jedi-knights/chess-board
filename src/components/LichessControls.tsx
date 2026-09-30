@@ -33,6 +33,8 @@ export function LichessControls() {
   const setToken = useLichessStore((s) => s.setToken);
   const clearToken = useLichessStore((s) => s.clearToken);
   const verifyAccount = useLichessStore((s) => s.verifyAccount);
+  const oauthLogin = useLichessStore((s) => s.oauthLogin);
+  const [oauthInFlight, setOauthInFlight] = useState(false);
   const seek = useLichessStore((s) => s.seek);
   const stopSeek = useLichessStore((s) => s.stopSeek);
   const challengeUser = useLichessStore((s) => s.challengeUser);
@@ -62,21 +64,41 @@ export function LichessControls() {
     await verifyAccount();
   }
 
+  async function signIn() {
+    setOauthInFlight(true);
+    try {
+      await oauthLogin();
+    } finally {
+      setOauthInFlight(false);
+    }
+  }
+
   return (
     <div className="lichess-controls">
       <h2>Play on Lichess</h2>
       {!hasToken ? (
-        <div className="lichess-token-field">
-          <input
-            type="password"
-            value={tokenInput}
-            onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="Lichess personal access token (board:play scope)"
-          />
-          <button onClick={saveToken} disabled={!tokenInput.trim()}>
-            Save token
+        <>
+          <button onClick={signIn} disabled={oauthInFlight}>
+            {oauthInFlight ? "Waiting for browser…" : "Sign in with Lichess"}
           </button>
-        </div>
+          <p className="hint">
+            Or paste a personal access token (board:play scope). The token is stored in
+            your OS keychain and never leaves this app; sign-in opens a browser tab and
+            catches the callback on a loopback port.
+          </p>
+          <div className="lichess-token-field">
+            <input
+              type="password"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="Personal access token"
+              disabled={oauthInFlight}
+            />
+            <button onClick={saveToken} disabled={!tokenInput.trim() || oauthInFlight}>
+              Save token
+            </button>
+          </div>
+        </>
       ) : (
         <div className="lichess-token-field">
           <p className="lichess-token-status">

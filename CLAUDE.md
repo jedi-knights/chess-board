@@ -346,6 +346,35 @@ this file and the human-facing docs.
   streaming requests, because setting a total timeout on a stream would kill it after
   N seconds regardless of activity. The 20 s idle-timeout inside `pump_ndjson_stream`
   handles the half-open-connection case for streams instead.
+- **OAuth 2.0 + PKCE login is an *alternative* to pasting a PAT, not a replacement.**
+  `lichess_oauth_login(slot)` opens a browser tab to Lichess's `/oauth` authorize
+  screen, catches the callback on a `TcpListener` bound to `127.0.0.1:0` (kernel-
+  assigned port), exchanges the code for an access token, and stores it in the
+  same OS-keychain slot the PAT flow uses. Scopes are slot-specific:
+  `board:play` for the Human slot, `bot:play` + `challenge:write` for the Bot
+  slot -- exactly what each mode's endpoints require, no more. Both flows
+  populate the same `verifiedAccount` and go through the same
+  `enforce_slot_matches` guard on the next authenticated request. Do not delete
+  the PAT input in either control -- some users legitimately prefer copy-paste
+  over browser round-trips (headless CI, air-gapped setups).
+- **CSRF `state` is verified in Rust before the code is honored.** The
+  authorize URL includes a 22-char base64url random `state`; the callback's
+  `state` must match exactly or `accept_callback` returns a 400 to the browser
+  and errors out. This isn't optional -- a leaked or predictable state defeats
+  the whole PKCE flow. `generate_state` uses `getrandom` (OS randomness), not
+  a plain PRNG.
+- **PKCE primitives live in `src-tauri/src/lichess_oauth.rs`, not in
+  `lichess.rs`.** The `code_verifier` is 32 bytes → 43-char URL-safe base64
+  (RFC 7636 §4.1's minimum); `challenge_from_verifier` hashes the verifier's
+  ASCII bytes and base64url-encodes the digest, matching RFC 7636's Appendix B
+  test vector. Do not "simplify" the challenge to hash the raw random bytes --
+  RFC 7636 §4.2 defines it over the verifier *string*, and the Appendix B test
+  vector is the source of truth for the invariant.
+- **The token endpoint call sidesteps `post_with_retry`.** `/api/token` is
+  unauthenticated (no bearer header) and runs exactly once per login;
+  serializing it through the outbound mutex would gratuitously block other
+  requests while the user is still in the authorize screen. The one-shot
+  client's 30 s total timeout is enough protection on its own.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via
