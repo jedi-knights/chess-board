@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatClockTime, formatDuration } from "./time";
+import { formatClockMs, formatClockTime, formatDuration } from "./time";
 
 describe("formatDuration", () => {
   it("formats sub-minute durations as seconds", () => {
@@ -23,5 +23,33 @@ describe("formatClockTime", () => {
   it("renders a two-digit hour:minute:second string", () => {
     const rendered = formatClockTime(new Date("2024-01-01T09:05:03"));
     expect(rendered).toMatch(/^\d{1,2}:\d{2}:\d{2}\s?(AM|PM)?$/i);
+  });
+});
+
+describe("formatClockMs", () => {
+  it("formats sub-minute clocks as 0:ss", () => {
+    expect(formatClockMs(58000)).toBe("0:58");
+    expect(formatClockMs(1000)).toBe("0:01");
+  });
+
+  it("formats minutes and seconds as m:ss", () => {
+    expect(formatClockMs(60000)).toBe("1:00");
+    expect(formatClockMs(83000)).toBe("1:23");
+    expect(formatClockMs(605000)).toBe("10:05");
+  });
+
+  it("formats games over an hour as h:mm:ss", () => {
+    expect(formatClockMs(3661000)).toBe("1:01:01");
+  });
+
+  it("rounds down on remaining seconds so a near-zero clock reads 0:00", () => {
+    // Rounding up would misrepresent "0:01" of remaining time when the
+    // player really has effectively none.
+    expect(formatClockMs(999)).toBe("0:00");
+    expect(formatClockMs(0)).toBe("0:00");
+  });
+
+  it("clamps negative input to zero", () => {
+    expect(formatClockMs(-1000)).toBe("0:00");
   });
 });

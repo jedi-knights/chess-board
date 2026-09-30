@@ -10,6 +10,7 @@ import {
   buildSetOptionCommand,
   parseUciLine,
   upsertOption,
+  type GoOptions,
   type UciInfo,
   type UciOption,
 } from "../lib/uci";
@@ -17,6 +18,13 @@ import { useGameStore } from "./gameStore";
 
 export type Side = "w" | "b";
 export type EngineStatus = "idle" | "starting" | "ready" | "thinking" | "error" | "crashed";
+
+/** How this engine composes its `go` line for a new search. Called fresh on
+ * every request so a clock-aware caller can read live server clocks at the
+ * moment of the send, not at strategy-registration time. Return `null` to
+ * fall back to the default `{ movetimeMs: state.movetimeMs }` behavior --
+ * useful for a caller that wants to inject *only* under specific conditions. */
+export type GoBuilder = () => GoOptions | null;
 
 export interface EngineExitPayload {
   code: number | null;
@@ -64,9 +72,26 @@ export interface EngineStoreState {
    * its search context indefinitely. The forthcoming `bestmove` is dropped
    * by `applyEngineBestMove`'s late-bestmove guard. */
   stopSearch: () => void;
+  /** Fire-and-forget `ucinewgame` + `isready` sequence, for a caller that
+   * wants to reuse a ready engine for a new logical game (Lichess bot
+   * mode's between-games path). Does nothing when the engine isn't ready. */
+  newGame: () => void;
+  /** Registers a caller-supplied `go`-options builder. Cleared with `null`.
+   * `lichessBotStore.handleGameStart` installs a clock-driven builder;
+   * every other mode leaves this alone so the default movetime path runs. */
+  setGoBuilder: (builder: GoBuilder | null) => void;
 }
 
-const NOT_RUNNING = new Set<EngineStatus>(["idle", "error", "crashed"]);
+/** Statuses that mean this engine isn't holding a live process. Exported
+ * so callers who need to conditionally start-or-restart (bot mode's
+ * between-games handoff) don't have to duplicate the set. */
+export const ENGINE_NOT_RUNNING: ReadonlySet<EngineStatus> = new Set<EngineStatus>([
+  "idle",
+  "error",
+  "crashed",
+]);
+
+const NOT_RUNNING = ENGINE_NOT_RUNNING;
 
 /**
  * One independent engine store per side, so both sides can be engine-
@@ -78,6 +103,11 @@ const NOT_RUNNING = new Set<EngineStatus>(["idle", "error", "crashed"]);
  */
 export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStoreState>> {
   let listenersInstalled = false;
+  // Caller-installed `go`-options builder; null means "use the default
+  // movetime-only shape". Held here rather than in the persisted state
+  // because it's a closure, not serializable, and it makes no sense
+  // to survive a reload -- whichever caller registered it is gone.
+  let goBuilder: GoBuilder | null = null;
   // Set just before an intentional `engine_stop` call and consumed by the
   // engine-exit listener below. Rust's stop_locked() kills the process and
   // joins its stdout-reader thread -- which emits engine-exit-{side} on EOF
@@ -185,7 +215,13 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
       useEngineStore.setState({ status: "thinking", searchInfoHistory: [], lastInfo: null });
       const moves = game.plies.map((p) => p.uci);
       const positionCmd = buildPositionCommand(moves);
-      const goCmd = buildGoCommand(engine.movetimeMs);
+      // Prefer the caller's builder when installed (bot mode's clock-
+      // aware allocation); fall back to a plain movetime when it returns
+      // null or isn't installed at all (human-vs-engine, engine-vs-engine).
+      const builderResult = goBuilder?.() ?? null;
+      const goOpts: GoOptions =
+        builderResult ?? { movetimeMs: useEngineStore.getState().movetimeMs };
+      const goCmd = buildGoCommand(goOpts);
       logDebug(`sending: ${positionCmd}`);
       logDebug(`sending: ${goCmd}`);
       invoke("engine_write_line", { side, line: positionCmd })
@@ -347,6 +383,24 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
           if (useEngineStore.getState().status !== "thinking") return;
           logDebug("stop search requested");
           invoke("engine_write_line", { side, line: "stop" }).catch(() => {});
+        },
+
+        newGame: () => {
+          if (useEngineStore.getState().status !== "ready") return;
+          logDebug("ucinewgame");
+          // Fire-and-forget both: `isready` is the standard follow-up
+          // to `ucinewgame`, but the existing position/go flow does not
+          // gate on `readyok` and this pair is idempotent enough that a
+          // late response can't cause harm. Also clears per-search
+          // state so a stale info line from the previous game can't
+          // land in this one's history.
+          useEngineStore.setState({ searchInfoHistory: [], lastInfo: null });
+          void invoke("engine_write_line", { side, line: "ucinewgame" });
+          void invoke("engine_write_line", { side, line: "isready" });
+        },
+
+        setGoBuilder: (builder) => {
+          goBuilder = builder;
         },
       }),
       {

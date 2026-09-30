@@ -15,3 +15,17 @@ export function formatClockTime(date: Date): string {
     second: "2-digit",
   });
 }
+
+/** Formats a remaining game clock (in milliseconds) as `M:SS`, or
+ * `H:MM:SS` when the clock exceeds an hour. Rounds *down* on seconds --
+ * a reading of 999 ms shows "0:00" because the player has effectively
+ * no time left, and showing "0:01" would misrepresent the state. */
+export function formatClockMs(ms: number): string {
+  const clamped = Math.max(0, Math.floor(ms / 1000));
+  const seconds = clamped % 60;
+  const minutes = Math.floor(clamped / 60) % 60;
+  const hours = Math.floor(clamped / 3600);
+  const ss = seconds.toString().padStart(2, "0");
+  const mm = minutes.toString().padStart(2, "0");
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${minutes}:${ss}`;
+}

@@ -39,6 +39,8 @@ export function LichessBotControls() {
   const setMovetimeMs = useLichessBotStore((s) => s.setMovetimeMs);
   const acceptRated = useLichessBotStore((s) => s.acceptRated);
   const setAcceptRated = useLichessBotStore((s) => s.setAcceptRated);
+  const lagMarginMs = useLichessBotStore((s) => s.lagMarginMs);
+  const setLagMarginMs = useLichessBotStore((s) => s.setLagMarginMs);
 
   const status = useLichessBotStore((s) => s.status);
   const errorMessage = useLichessBotStore((s) => s.errorMessage);
@@ -180,13 +182,24 @@ export function LichessBotControls() {
         {enginePath ? `Engine: ${deriveEngineIdentifier(enginePath)}` : "Choose engine binary…"}
       </button>
       <label className="engine-field">
-        Movetime (ms)
+        Movetime cap (ms)
         <input
           type="number"
           min={100}
           step={100}
           value={movetimeMs}
           onChange={(e) => setMovetimeMs(Number(e.target.value))}
+          disabled={listening}
+        />
+      </label>
+      <label className="engine-field">
+        Lag margin (ms)
+        <input
+          type="number"
+          min={0}
+          step={10}
+          value={lagMarginMs}
+          onChange={(e) => setLagMarginMs(Number(e.target.value))}
           disabled={listening}
         />
       </label>

@@ -10,10 +10,12 @@ import {
   type LichessAccountInfo,
   type LichessChallengeEvent,
   type LichessDeclineReason,
+  type LichessMoveUpdate,
 } from "../lib/lichess";
-import { engineStoreForSide } from "./engineStore";
+import type { GoOptions } from "../lib/uci";
+import { ENGINE_NOT_RUNNING, engineStoreForSide } from "./engineStore";
 import { useGameStore } from "./gameStore";
-import { movesToApply, pendingMoveToSend } from "./lichessStore";
+import { movesToApply, pendingMoveToSend, type LiveClocks } from "./lichessStore";
 
 export type LichessBotStatus = "idle" | "listening" | "playing" | "error";
 
@@ -34,6 +36,14 @@ interface LichessBotStoreState {
    * other players' ratings unless the operator has explicitly opted in.
    * See `decideChallenge` in `src/lib/lichess.ts` for the enforcement. */
   acceptRated: boolean;
+  /** Persisted milliseconds to subtract from the engine's own-clock
+   * value in `go wtime/btime` so network and IPC latency doesn't push
+   * a tight game into a time forfeit. Default 100 ms. */
+  lagMarginMs: number;
+  /** Most recent server clock snapshot for the live game -- shared shape
+   * with lichessStore. Populated by every `gameState` update, cleared
+   * on game end and on stopListening. */
+  serverClocks: LiveClocks | null;
   /** This mode's engine choice, independent of the White/Black engine
    * slots -- Bot API mode doesn't know which color Lichess will assign
    * the bot until a challenge actually arrives, so it can't pin its
@@ -42,6 +52,10 @@ interface LichessBotStoreState {
    * `handleGameStart` copies this into whichever side's store the bot
    * actually ends up playing, right before starting it. */
   enginePath: string | null;
+  /** Movetime *cap* in bot mode: `go` always includes clock fields when
+   * a clock game is live, and `movetime` alongside them acts as an
+   * upper bound the engine won't exceed. Not the engine's own thinking
+   * budget the way it is in human-vs-engine/engine-vs-engine. */
   movetimeMs: number;
   status: LichessBotStatus;
   errorMessage: string | null;
@@ -57,6 +71,7 @@ interface LichessBotStoreState {
   setEnginePath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
   setAcceptRated: (v: boolean) => void;
+  setLagMarginMs: (ms: number) => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
    * doc comment. The caller (the UI) is responsible for a separate,
    * explicit confirmation step before calling this. Returns whether it
@@ -139,6 +154,50 @@ async function handleChallenge(challenge: LichessChallengeEvent) {
   // them out is the correct behavior.
 }
 
+/** Clock-driven `go`-options builder installed on the engine store for
+ * the duration of a bot game. Reads the *current* store state on each
+ * call so a mid-game `setLagMarginMs`/`setMovetimeMs` takes effect
+ * immediately.
+ *
+ * The bot's own clock -- and *only* the bot's own clock -- is adjusted
+ * for two things Lichess doesn't report:
+ *   1. `elapsed`: milliseconds between Lichess reporting the clock and
+ *      this call. The server's reported wtime/btime is stale by roughly
+ *      the network round-trip; the ticking side has burned that time
+ *      already.
+ *   2. `lagMarginMs`: headroom for this app's *own* IPC + HTTP latency
+ *      going the other direction (engine bestmove -> POST /move ->
+ *      server sees it).
+ *
+ * The opponent's clock is left at what Lichess reported: while the bot
+ * is thinking, the opponent's clock isn't ticking, and no one owes the
+ * opponent a lag margin. Movetime is included as an upper cap. Falls
+ * back to plain movetime when the update stream hasn't reported any
+ * clock at all (correspondence, unlimited). */
+function buildBotGoOptions(botColor: "w" | "b"): GoOptions {
+  const { serverClocks, lagMarginMs, movetimeMs } = useLichessBotStore.getState();
+  if (!serverClocks) {
+    return { movetimeMs };
+  }
+  const elapsed = Math.max(0, Date.now() - serverClocks.updatedAtMs);
+  const ownAdjustment = elapsed + lagMarginMs;
+  const wtimeMs =
+    botColor === "w"
+      ? Math.max(1, serverClocks.wtimeMs - ownAdjustment)
+      : serverClocks.wtimeMs;
+  const btimeMs =
+    botColor === "b"
+      ? Math.max(1, serverClocks.btimeMs - ownAdjustment)
+      : serverClocks.btimeMs;
+  return {
+    wtimeMs,
+    btimeMs,
+    wincMs: serverClocks.wincMs,
+    bincMs: serverClocks.bincMs,
+    movetimeMs,
+  };
+}
+
 async function handleGameStart(gameId: string, botColor: "w" | "b") {
   const { enginePath, movetimeMs } = useLichessBotStore.getState();
   if (!enginePath) {
@@ -148,7 +207,12 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
   const engine = engineStoreForSide(botColor);
 
   logDebug(`game starting: ${gameId}, engine plays ${botColor}`);
-  useLichessBotStore.setState({ activeGameId: gameId, lastSentUci: null, errorMessage: null });
+  useLichessBotStore.setState({
+    activeGameId: gameId,
+    lastSentUci: null,
+    errorMessage: null,
+    serverClocks: null,
+  });
 
   // Same ordering as EngineControls/LichessControls: reset the board
   // *before* the engine or the game stream is confirmed, so nothing stale
@@ -158,18 +222,43 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
     b: botColor === "w" ? "lichess" : "engine",
   });
   try {
-    // This mode's own movetime choice (see enginePath's doc comment) has
-    // to be copied into whichever side's store actually starts, since
-    // that store's own persisted movetimeMs may be stale from a different
-    // mode entirely.
-    engine.getState().setMovetimeMs(movetimeMs);
-    await engine.getState().startEngine(enginePath);
-    // startEngine never rejects on failure (it reports failure via status +
-    // errorMessage instead) -- must check the resulting status explicitly.
-    if (engine.getState().status !== "ready") {
-      failBot(engine.getState().errorMessage ?? "engine failed to start");
-      return;
+    const engineState = engine.getState();
+    // Between-games reuse: if the same engine binary is already ready,
+    // just send `ucinewgame` + `isready` and reuse the process. This is
+    // materially faster than a full stop/start on a real engine (opening
+    // book / hash table warmup) and avoids the "startEngine no-ops on
+    // status=ready" trap that CLAUDE.md called out.
+    const canReuse =
+      engineState.status === "ready" && engineState.path === enginePath;
+    if (canReuse) {
+      logDebug("reusing ready engine via ucinewgame + isready");
+      engine.getState().setMovetimeMs(movetimeMs);
+      engine.getState().newGame();
+    } else {
+      // Different binary or stale state: fully stop-and-start. Stop only
+      // when actually running -- an idle/error/crashed status has no
+      // process to stop.
+      if (!ENGINE_NOT_RUNNING.has(engineState.status)) {
+        logDebug("engine changed or not ready -- stopping first");
+        await engine.getState().stopEngine();
+      }
+      engine.getState().setMovetimeMs(movetimeMs);
+      await engine.getState().startEngine(enginePath);
+      // startEngine never rejects on failure (it reports failure via status +
+      // errorMessage instead) -- must check the resulting status explicitly.
+      if (engine.getState().status !== "ready") {
+        failBot(engine.getState().errorMessage ?? "engine failed to start");
+        return;
+      }
     }
+
+    // Install the clock-aware `go` builder for the duration of this
+    // game. Every subsequent `maybeRequestEngineMove` reads live
+    // clocks; the builder is cleared on game end / stopListening so
+    // human-vs-engine and engine-vs-engine modes continue to use the
+    // default movetime-only path.
+    engine.getState().setGoBuilder(() => buildBotGoOptions(botColor));
+
     await invoke("lichess_bot_stream_game", { gameIdOrUrl: gameId });
     // Only unlock moves once *both* the engine and the bot game stream have
     // confirmed ready -- startEngine deliberately no longer does this
@@ -182,8 +271,63 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
   }
 }
 
+/** Snapshots the update's clock fields into the bot store *before* the
+ * moves in the same update are applied, so any engine-side `go` that
+ * fires from the `attemptMove` → gameStore-subscribe chain reads the
+ * freshest clocks rather than the previous update's stale ones. Returns
+ * the *previous* snapshot for use in the post-loop think-time
+ * annotation. */
+function commitServerClocksEarly(update: LichessMoveUpdate) {
+  const prev = useLichessBotStore.getState().serverClocks;
+  if (update.wtimeMs !== null && update.btimeMs !== null) {
+    useLichessBotStore.setState({
+      serverClocks: {
+        wtimeMs: update.wtimeMs,
+        btimeMs: update.btimeMs,
+        wincMs: update.wincMs ?? 0,
+        bincMs: update.bincMs ?? 0,
+        updatedAtMs: Date.now(),
+      },
+    });
+  }
+  return prev;
+}
+
+/** Uses the captured pre-update clocks to compute think-time for a
+ * single new ply. Multi-move catch-ups on reconnect and no-clock games
+ * (correspondence, unlimited) leave the ply un-annotated (`undefined`
+ * in the move log) rather than fabricating a value. Same reasoning as
+ * the human-mode counterpart in lichessStore.ts. */
+function annotateLastPlyThinkTime(
+  prev: LiveClocks | null,
+  update: LichessMoveUpdate,
+  appliedCount: number,
+) {
+  if (appliedCount !== 1 || !prev) return;
+  const lastPly = useGameStore.getState().plies.at(-1);
+  if (!lastPly) return;
+  const color = lastPly.color;
+  const prevTimeMs = color === "w" ? prev.wtimeMs : prev.btimeMs;
+  const newTimeMs = color === "w" ? update.wtimeMs : update.btimeMs;
+  const incMs = color === "w" ? prev.wincMs : prev.bincMs;
+  if (newTimeMs === null) return;
+  const thinkTimeSeconds = Math.max(0, (prevTimeMs + incMs - newTimeMs) / 1000);
+  useGameStore.getState().annotateLastPly({
+    thinkTimeSeconds,
+    clockSeconds: newTimeMs / 1000,
+  });
+}
+
 function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   if (!update) return;
+  // Update serverClocks *before* the move loop -- attemptMove fires
+  // gameStore.subscribe synchronously, and engineStore's subscriber
+  // reads `serverClocks` inside `buildBotGoOptions` to build the `go`
+  // line. If clocks were updated after, the engine would see the
+  // *previous* update's values on every second and subsequent go, which
+  // in bullet games would consistently over-allocate.
+  const prevClocks = commitServerClocksEarly(update);
+
   // Same movesToApply diff as lichessStore's human-play path -- it's
   // agnostic to *who* made a given move, so it also correctly no-ops on
   // Lichess echoing the engine's own move back.
@@ -199,6 +343,8 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
     }
   }
 
+  annotateLastPlyThinkTime(prevClocks, update, newMoves.length);
+
   if (isTerminalStatus(update.status)) {
     logDebug(`game over: ${update.status}`);
     // Ask the engine to stop searching if it's mid-move -- the engine's
@@ -207,8 +353,17 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
     // for the next game and (worse) the incoming bestmove would have been
     // applied to the board and attempted-POST to a closed Lichess stream.
     const engineSide = useGameStore.getState().controllers.w === "engine" ? "w" : "b";
-    engineStoreForSide(engineSide).getState().stopSearch();
-    useLichessBotStore.setState({ status: "listening", activeGameId: null });
+    const engine = engineStoreForSide(engineSide);
+    engine.getState().stopSearch();
+    // Clear the clock-aware go builder: the next game will re-install
+    // it, but between games (in the "listening" state) any spurious
+    // engine trigger should fall back to the default movetime path.
+    engine.getState().setGoBuilder(null);
+    useLichessBotStore.setState({
+      status: "listening",
+      activeGameId: null,
+      serverClocks: null,
+    });
     useGameStore.getState().exitPlayMode();
     invoke("lichess_stop_game").catch(() => {});
   }
@@ -305,6 +460,8 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       verifiedAccount: null,
       verifyError: null,
       acceptRated: false,
+      lagMarginMs: 100,
+      serverClocks: null,
       enginePath: null,
       movetimeMs: 1000,
       status: "idle",
@@ -345,6 +502,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       setEnginePath: (enginePath) => set({ enginePath }),
       setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
       setAcceptRated: (acceptRated) => set({ acceptRated }),
+      setLagMarginMs: (lagMarginMs) => set({ lagMarginMs }),
 
       upgradeToBotAccount: async () => {
         logDebug("requesting bot account upgrade");
@@ -394,7 +552,19 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
           await invoke("lichess_stop_events");
           await invoke("lichess_stop_game");
         } finally {
-          set({ status: "idle", errorMessage: null, activeGameId: null });
+          // Clear the clock-aware go builder on both sides -- either
+          // side may hold it depending on which color the last game
+          // assigned to the bot. A leaked builder would keep reading
+          // stale `serverClocks` if the same engine store were later
+          // reused in engine-vs-engine mode.
+          engineStoreForSide("w").getState().setGoBuilder(null);
+          engineStoreForSide("b").getState().setGoBuilder(null);
+          set({
+            status: "idle",
+            errorMessage: null,
+            activeGameId: null,
+            serverClocks: null,
+          });
           useGameStore.getState().exitPlayMode();
         }
       },
@@ -405,6 +575,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         enginePath: state.enginePath,
         movetimeMs: state.movetimeMs,
         acceptRated: state.acceptRated,
+        lagMarginMs: state.lagMarginMs,
       }),
     },
   ),

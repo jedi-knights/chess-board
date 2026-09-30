@@ -252,6 +252,19 @@ describe("attemptMove", () => {
     expect(useGameStore.getState().ply).toBe(2);
   });
 
+  it("annotateLastPly attaches thinkTimeSeconds and clockSeconds to the most-recent ply", () => {
+    useGameStore.getState().attemptMove("e2", "e4");
+    useGameStore.getState().annotateLastPly({ thinkTimeSeconds: 2.5, clockSeconds: 178 });
+    const last = useGameStore.getState().plies.at(-1);
+    expect(last?.thinkTimeSeconds).toBe(2.5);
+    expect(last?.clockSeconds).toBe(178);
+  });
+
+  it("annotateLastPly is a safe no-op on an empty ply list", () => {
+    useGameStore.getState().annotateLastPly({ thinkTimeSeconds: 1 });
+    expect(useGameStore.getState().plies).toEqual([]);
+  });
+
   it("rejects an incoming move that is illegal against the live end", () => {
     useGameStore.getState().attemptMove("e2", "e4");
     useGameStore.getState().attemptMove("e7", "e5");

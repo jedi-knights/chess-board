@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useBlackEngineStore, useWhiteEngineStore } from "./engineStore";
 import { useGameStore } from "./gameStore";
 import { useLichessBotStore } from "./lichessBotStore";
 
@@ -39,6 +40,8 @@ beforeEach(() => {
     verifiedAccount: null,
     verifyError: null,
     acceptRated: false,
+    lagMarginMs: 100,
+    serverClocks: null,
     enginePath: null,
     movetimeMs: 1000,
     status: "idle",
@@ -46,6 +49,31 @@ beforeEach(() => {
     activeGameId: null,
     lastSentUci: null,
   });
+  // Reset both engine stores to a clean idle -- earlier tests may leave
+  // a ready-status engine, and handleGameStart's between-games reuse
+  // branch depends on the initial engine state, not a leftover one.
+  useWhiteEngineStore.setState({
+    path: null,
+    status: "idle",
+    movetimeMs: 1000,
+    lastInfo: null,
+    searchInfoHistory: [],
+    options: [],
+    optionValues: {},
+    errorMessage: null,
+  });
+  useBlackEngineStore.setState({
+    path: null,
+    status: "idle",
+    movetimeMs: 1000,
+    lastInfo: null,
+    searchInfoHistory: [],
+    options: [],
+    optionValues: {},
+    errorMessage: null,
+  });
+  useWhiteEngineStore.getState().setGoBuilder(null);
+  useBlackEngineStore.getState().setGoBuilder(null);
 });
 
 function emit(eventName: string, payload: unknown) {
@@ -308,11 +336,198 @@ describe("account event stream routes challenges through decideChallenge", () =>
   });
 });
 
-describe("setAcceptRated", () => {
-  it("flips the persisted preference", () => {
+describe("setAcceptRated / setLagMarginMs", () => {
+  it("flips the persisted acceptRated preference", () => {
     expect(useLichessBotStore.getState().acceptRated).toBe(false);
     useLichessBotStore.getState().setAcceptRated(true);
     expect(useLichessBotStore.getState().acceptRated).toBe(true);
+  });
+
+  it("updates the persisted lag margin", () => {
+    expect(useLichessBotStore.getState().lagMarginMs).toBe(100);
+    useLichessBotStore.getState().setLagMarginMs(250);
+    expect(useLichessBotStore.getState().lagMarginMs).toBe(250);
+  });
+});
+
+describe("handleGameStart between-games reuse (ucinewgame)", () => {
+  it("reuses a ready engine on the same path via ucinewgame + isready, not a full restart", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ enginePath: "/bin/engine" });
+    // Run a real startEngine so the store's plies-subscription is wired
+    // (setState alone leaves it un-installed) and status transitions to
+    // "ready" through the real path.
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    mockedInvoke.mockClear();
+
+    // gameStart -> bot plays white.
+    emitAccountEvent({ type: "gameStart", game: { gameId: "gameA123", color: "white" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Should have sent ucinewgame + isready to the existing engine, NOT
+    // engine_start (which would restart the whole process).
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "ucinewgame",
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "isready",
+    });
+    expect(mockedInvoke).not.toHaveBeenCalledWith("engine_start", expect.anything());
+  });
+
+  it("stops and restarts when the engine path changed since the previous game", async () => {
+    await startBotListening();
+    // Start on the old path, then flip the bot's engine choice to a new
+    // one -- handleGameStart should notice path drift and restart.
+    await useWhiteEngineStore.getState().startEngine("/bin/old-engine");
+    useLichessBotStore.setState({ enginePath: "/bin/new-engine" });
+    mockedInvoke.mockClear();
+
+    emitAccountEvent({ type: "gameStart", game: { gameId: "gameA123", color: "white" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Path differs -> full restart path.
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_stop", { side: "w" });
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_start", {
+      side: "w",
+      path: "/bin/new-engine",
+    });
+  });
+});
+
+describe("handleGameStart installs a clock-driven goBuilder", () => {
+  it("go includes wtime/btime/winc/binc + movetime cap once server clocks arrive", async () => {
+    // Fix Date.now() so the elapsed-since-server-update subtraction is
+    // deterministic (elapsed = 0 -> only lagMarginMs subtracted from
+    // the bot's own clock).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      await startBotListening();
+      useLichessBotStore.setState({
+        enginePath: "/bin/engine",
+        movetimeMs: 5000,
+        lagMarginMs: 100,
+      });
+      // Bot plays *black* here so the initial handleGameStart -> checkTurn
+      // path doesn't immediately send a `go` before any clocks arrive
+      // (initial side to move is white). Then a white move via the
+      // stream gives the bot its turn. Call startEngine (not a raw
+      // setState) so the gameStore.subscribe listener actually gets
+      // installed -- that's what wires plies-length changes into
+      // maybeRequestEngineMove.
+      await useBlackEngineStore.getState().startEngine("/bin/engine");
+
+      emitAccountEvent({ type: "gameStart", game: { gameId: "gameA123", color: "black" } });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // First gameState establishes the clock baseline (empty move list).
+      emit(
+        "lichess-bot-game-stream",
+        JSON.stringify({
+          type: "gameState",
+          moves: "",
+          status: "started",
+          wtime: 60000,
+          btime: 60000,
+          winc: 2000,
+          binc: 2000,
+        }),
+      );
+      // Clear now so the assertion catches only the clock-driven `go`.
+      mockedInvoke.mockClear();
+      // White plays e2e4 -- gives the bot (black) the turn.
+      emit(
+        "lichess-bot-game-stream",
+        JSON.stringify({
+          type: "gameState",
+          moves: "e2e4",
+          status: "started",
+          wtime: 58000,
+          btime: 60000,
+          winc: 2000,
+          binc: 2000,
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const goInvocations = mockedInvoke.mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === "engine_write_line" &&
+          typeof args === "object" &&
+          args !== null &&
+          typeof (args as { line?: unknown }).line === "string" &&
+          (args as { line: string }).line.startsWith("go "),
+      );
+      expect(goInvocations).not.toHaveLength(0);
+      const lastGo = (goInvocations.at(-1)?.[1] as { line: string }).line;
+      // Bot plays black, so only btime carries the lagMarginMs adjustment.
+      // wtime stays at 58000 (white isn't thinking); btime = 60000 - 100.
+      expect(lastGo).toContain("wtime 58000");
+      expect(lastGo).toContain("btime 59900");
+      expect(lastGo).toContain("winc 2000");
+      expect(lastGo).toContain("binc 2000");
+      expect(lastGo).toContain("movetime 5000");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("clock tracking annotates last-ply think-time", () => {
+  it("attaches thinkTimeSeconds to the ply just applied when clocks are known", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ enginePath: "/bin/engine" });
+    useWhiteEngineStore.setState({ status: "ready", path: "/bin/engine" });
+
+    // Bot plays black. Trigger the gameStart flow.
+    emitAccountEvent({ type: "gameStart", game: { gameId: "gameC456", color: "black" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // First gameState: no plies yet, but establishes the clock baseline.
+    emit(
+      "lichess-bot-game-stream",
+      JSON.stringify({
+        type: "gameState",
+        moves: "",
+        status: "started",
+        wtime: 60000,
+        btime: 60000,
+        winc: 2000,
+        binc: 2000,
+      }),
+    );
+    // White plays e2e4 -- consumed 3s off wtime (60 -> 59 with 2s inc; new is 60-3+2=59).
+    emit(
+      "lichess-bot-game-stream",
+      JSON.stringify({
+        type: "gameState",
+        moves: "e2e4",
+        status: "started",
+        wtime: 59000,
+        btime: 60000,
+        winc: 2000,
+        binc: 2000,
+      }),
+    );
+    await Promise.resolve();
+
+    const lastPly = useGameStore.getState().plies.at(-1);
+    expect(lastPly?.color).toBe("w");
+    // thinkTime = prev(60000) + winc(2000) - new(59000) = 3000 ms = 3s.
+    expect(lastPly?.thinkTimeSeconds).toBe(3);
+    expect(lastPly?.clockSeconds).toBe(59);
   });
 });
 

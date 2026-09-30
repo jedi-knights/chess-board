@@ -7,6 +7,7 @@ import { EngineVsEngineControls } from "./components/EngineVsEngineControls";
 import { GameLoader } from "./components/GameLoader";
 import { LichessBotControls } from "./components/LichessBotControls";
 import { LichessControls } from "./components/LichessControls";
+import { LiveGameClocks } from "./components/LiveGameClocks";
 import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
 import { PlaybackControls } from "./components/PlaybackControls";
@@ -106,6 +107,7 @@ function App() {
               <GameLoader />
             </div>
             <div className={sideTab === "moves" ? "side-tab-panel" : "side-tab-panel hidden"}>
+              <LiveGameClocks />
               <MoveList />
               <MoveLog />
             </div>

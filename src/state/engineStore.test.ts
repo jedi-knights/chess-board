@@ -392,3 +392,101 @@ describe("stopSearch", () => {
     expect(useWhiteEngineStore.getState().status).toBe("thinking");
   });
 });
+
+describe("newGame", () => {
+  it("sends ucinewgame + isready when the engine is ready and clears per-search state", async () => {
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    useWhiteEngineStore.setState({
+      searchInfoHistory: [{ type: "info", depth: 5 }],
+      lastInfo: { type: "info", depth: 5 },
+    });
+    mockedInvoke.mockClear();
+
+    useWhiteEngineStore.getState().newGame();
+    // Fire-and-forget invokes flush on the next tick.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "ucinewgame",
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "isready",
+    });
+    const state = useWhiteEngineStore.getState();
+    expect(state.searchInfoHistory).toEqual([]);
+    expect(state.lastInfo).toBeNull();
+  });
+
+  it("is a no-op when the engine isn't ready", () => {
+    useWhiteEngineStore.setState({ status: "thinking" });
+    mockedInvoke.mockClear();
+    useWhiteEngineStore.getState().newGame();
+    expect(mockedInvoke).not.toHaveBeenCalledWith(
+      "engine_write_line",
+      expect.objectContaining({ line: "ucinewgame" }),
+    );
+  });
+});
+
+describe("setGoBuilder", () => {
+  it("routes maybeRequestEngineMove through the caller-supplied builder when installed", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    useGameStore.getState().enterPlayMode();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    useWhiteEngineStore.getState().setGoBuilder(() => ({
+      wtimeMs: 60000,
+      btimeMs: 58000,
+      wincMs: 2000,
+      bincMs: 2000,
+      movetimeMs: 5000,
+    }));
+    mockedInvoke.mockClear();
+
+    useWhiteEngineStore.getState().checkTurn();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "go wtime 60000 btime 58000 winc 2000 binc 2000 movetime 5000",
+    });
+  });
+
+  it("falls back to the default movetime path when the builder returns null", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    useGameStore.getState().enterPlayMode();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    useWhiteEngineStore.getState().setGoBuilder(() => null);
+    mockedInvoke.mockClear();
+
+    useWhiteEngineStore.getState().checkTurn();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "go movetime 1000",
+    });
+  });
+
+  it("clears with null and reverts to the default movetime path", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    useGameStore.getState().enterPlayMode();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    useWhiteEngineStore.getState().setGoBuilder(() => ({ movetimeMs: 5000 }));
+    useWhiteEngineStore.getState().setGoBuilder(null);
+    mockedInvoke.mockClear();
+
+    useWhiteEngineStore.getState().checkTurn();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "go movetime 1000",
+    });
+  });
+});
