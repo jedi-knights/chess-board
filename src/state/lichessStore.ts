@@ -119,6 +119,12 @@ interface LichessStoreState {
   /** Live-fetch `/api/account` under the human slot and cache the result.
    * Populates `verifiedAccount` on success, `verifyError` on failure. */
   verifyAccount: () => Promise<void>;
+  /** OAuth 2.0 + PKCE login for the human slot: opens a Lichess
+   * authorize tab in the user's browser, catches the callback on a
+   * loopback listener, stores the resulting token in the OS keychain,
+   * and populates `verifiedAccount`. Alternative to `setToken` for
+   * users who don't want to paste a PAT. */
+  oauthLogin: () => Promise<void>;
   /** Board API seek. Opens the account event stream (so `gameStart` can
    * auto-connect the game stream on match) then POSTs the seek. The
    * seek request stays open on the server until matched or aborted. */
@@ -487,6 +493,24 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
     } catch (err) {
       set({ verifiedAccount: null, verifyError: String(err) });
       logDebug(`verify failed: ${String(err)}`);
+    }
+  },
+
+  oauthLogin: async () => {
+    logDebug("oauth login requested");
+    try {
+      const info = await invoke<LichessAccountInfo>("lichess_oauth_login", {
+        slot: HUMAN_SLOT,
+      });
+      set({
+        hasToken: true,
+        verifiedAccount: info,
+        verifyError: null,
+      });
+      logDebug(`oauth login succeeded as ${info.username}`);
+    } catch (err) {
+      set({ verifyError: String(err) });
+      logDebug(`oauth login failed: ${String(err)}`);
     }
   },
 

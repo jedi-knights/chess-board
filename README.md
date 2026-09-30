@@ -85,7 +85,7 @@ This opens the app window.
 
 **To play against an engine:** click **Choose engine binary…** and pick your compiled UCI engine (chess-board remembers this choice across restarts, so you only need to do this once per engine), choose **Play as** White or Black, optionally adjust **Movetime (ms)**, then **Start game**. Click one of your pieces — its legal destination squares highlight — then click a highlighted square to move. The engine replies on its own; watch the **Status** line for its depth/score while it's thinking.
 
-**To play on Lichess** (Board API): switch to **Play on Lichess** in the View menu's Game Mode group, paste a Lichess personal-access token with the `board:play` scope into the **human slot** field, then pick one of four ways to start a game:
+**To play on Lichess** (Board API): switch to **Play on Lichess** in the View menu's Game Mode group. Click **Sign in with Lichess** to authorize via OAuth (opens a browser tab, catches the callback on a loopback port), or paste a Lichess personal-access token with the `board:play` scope into the **human slot** field. Either way, the resulting token is stored in your OS keychain and never leaves the app. Then pick one of four ways to start a game:
 
 - **Seek an opponent** — posts an open seek to Lichess's real-time lobby; auto-connects when someone accepts.
 - **Challenge a user** — challenge a specific Lichess account by name.

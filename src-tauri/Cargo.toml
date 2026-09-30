@@ -36,12 +36,22 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # ambient runtime (no separate runtime), time for the 20 s keep-alive
 # timeout + exponential-backoff sleeps + 60 s 429-retry pause, sync for
 # the static outbound mutex that serializes authenticated POSTs.
-tokio = { version = "1", features = ["rt", "time", "sync"] }
+# `net` + `io-util` for the OAuth PKCE loopback listener: bind
+# 127.0.0.1:0, accept one connection, read the callback query, write a
+# 200 back so the browser tab shows a success page.
+tokio = { version = "1", features = ["rt", "time", "sync", "net", "io-util"] }
 # Cross-platform OS keychain (macOS Keychain / Windows Credential Manager /
 # Linux Secret Service) for the Lichess personal access token -- deliberately
 # not persisted via zustand's localStorage-backed store, since it's a bearer
 # credential, not a UI preference. See owasp-top-10.md A04.
 keyring = "3"
+# PKCE primitives for the OAuth2 flow. Small, single-purpose deps: sha2
+# for the code_challenge digest, base64 for URL-safe encoding, getrandom
+# for the code_verifier + CSRF state (OS randomness, not the heavier
+# `rand` crate's stack of extras).
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

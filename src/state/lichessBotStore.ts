@@ -75,6 +75,10 @@ interface LichessBotStoreState {
   /** Live-fetch `/api/account` under the bot slot; see human-side
    * `verifyAccount` for the same rationale. */
   verifyAccount: () => Promise<void>;
+  /** OAuth 2.0 + PKCE login for the bot slot. Same shape as the
+   * human-side counterpart; requests bot-specific scopes
+   * (`bot:play` + `challenge:write`). */
+  oauthLogin: () => Promise<void>;
   setEnginePath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
   setAcceptRated: (v: boolean) => void;
@@ -535,6 +539,24 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         } catch (err) {
           set({ verifiedAccount: null, verifyError: String(err) });
           logDebug(`verify failed: ${String(err)}`);
+        }
+      },
+
+      oauthLogin: async () => {
+        logDebug("oauth login requested");
+        try {
+          const info = await invoke<LichessAccountInfo>("lichess_oauth_login", {
+            slot: BOT_SLOT,
+          });
+          set({
+            hasToken: true,
+            verifiedAccount: info,
+            verifyError: null,
+          });
+          logDebug(`oauth login succeeded as ${info.username}`);
+        } catch (err) {
+          set({ verifyError: String(err) });
+          logDebug(`oauth login failed: ${String(err)}`);
         }
       },
 

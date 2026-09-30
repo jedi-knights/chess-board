@@ -452,6 +452,111 @@ pub async fn lichess_verify_account(
     Ok(info)
 }
 
+/// Runs the OAuth 2.0 + PKCE login flow for the given slot: opens a
+/// browser tab to Lichess's authorize screen, catches the callback on
+/// a loopback listener, exchanges the code for an access token, and
+/// stores it in the same OS-keychain slot the PAT flow uses. Returns
+/// the verified account info so the UI can immediately show "signed
+/// in as X" without a separate follow-up call.
+///
+/// Slot-specific scopes: human gets `board:play`, bot gets `bot:play`
+/// + `challenge:write` -- exactly what each mode's endpoints require,
+/// no more. Do not widen without a specific need; a narrower token is
+/// less dangerous if it later leaks.
+///
+/// The command holds an open TCP listener for up to
+/// `CALLBACK_TIMEOUT` (5 minutes) while the user approves in the
+/// browser. If they close the tab or take too long, the timeout
+/// surfaces as an error and the port is released.
+#[tauri::command]
+pub async fn lichess_oauth_login(
+    app: AppHandle,
+    slot: TokenSlot,
+    account_cache: State<'_, SharedAccountCache>,
+) -> Result<AccountInfo, String> {
+    use crate::lichess_oauth::{
+        accept_callback, build_authorize_url, challenge_from_verifier, exchange_code_for_token,
+        generate_state, generate_verifier, CALLBACK_TIMEOUT,
+    };
+    use tauri_plugin_opener::OpenerExt;
+
+    let scopes: &[&str] = match slot {
+        TokenSlot::Human => &["board:play"],
+        TokenSlot::Bot => &["bot:play", "challenge:write"],
+    };
+
+    // PKCE material: generated on every login so a leaked previous
+    // verifier can't replay against a fresh code, and vice versa.
+    let verifier = generate_verifier();
+    let challenge = challenge_from_verifier(&verifier);
+    let expected_state = generate_state();
+
+    // Bind before opening the browser -- if the bind fails, the user
+    // never sees a stuck browser tab.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("failed to bind loopback listener: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("failed to read loopback port: {e}"))?
+        .port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+
+    let authorize_url =
+        build_authorize_url(&challenge, &expected_state, &redirect_uri, scopes)?;
+    let _ = crate::debug_log::append(
+        &app,
+        &format!("[lichess-oauth] authorize on :{port} for {:?}", slot),
+    );
+
+    app.opener()
+        .open_url(&authorize_url, None::<String>)
+        .map_err(|e| format!("failed to open browser: {e}"))?;
+
+    // Bounded wait: the user might get distracted or fail Lichess's
+    // login flow before approving. 5 minutes matches
+    // `CALLBACK_TIMEOUT`.
+    let params = tokio::time::timeout(
+        CALLBACK_TIMEOUT,
+        accept_callback(&listener, &expected_state),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "OAuth flow timed out after {}s -- click Sign in with Lichess again",
+            CALLBACK_TIMEOUT.as_secs()
+        )
+    })??;
+
+    // Trade the code for a token. Uses the shared one-shot client
+    // (has a 30 s total timeout) so a hung token endpoint doesn't
+    // deadlock the app.
+    let client = new_client()?;
+    let token = exchange_code_for_token(&client, &params.code, &verifier, &redirect_uri).await?;
+
+    // Store just like the PAT flow does, and invalidate the account
+    // cache so the follow-up verify reads through fresh. The
+    // `enforce_slot_matches` guard runs at the next authenticated call
+    // -- verify_account itself deliberately skips it so the UI can
+    // display "this is a BOT account" for a token that's in the human
+    // slot rather than silently erroring.
+    keyring_entry(slot)?
+        .set_password(&token)
+        .map_err(|e| format!("failed to store OAuth token in OS keychain: {e}"))?;
+    invalidate_account_cache(&account_cache, slot);
+
+    let info = fetch_account_info(&client, &token).await?;
+    cache_put(&account_cache, slot, info.clone());
+    let _ = crate::debug_log::append(
+        &app,
+        &format!(
+            "[lichess-oauth] signed in as {} (isBot={}) in slot {:?}",
+            info.username, info.is_bot, slot
+        ),
+    );
+    Ok(info)
+}
+
 /// Validates a single UCI move (e.g. `e2e4`, `e7e8q`) before it's spliced
 /// into a request URL -- the same trust-boundary reasoning as
 /// `parse_game_id`, just for the move half of the move-submission endpoint.

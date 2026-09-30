@@ -138,6 +138,33 @@ describe("refreshHasToken / setToken / clearToken", () => {
   });
 });
 
+describe("oauthLogin", () => {
+  it("stores the token, populates verifiedAccount, and forwards the bot slot", async () => {
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_oauth_login"
+        ? Promise.resolve({ id: "botty", username: "Botty", isBot: true })
+        : Promise.resolve(undefined),
+    );
+    await useLichessBotStore.getState().oauthLogin();
+    const state = useLichessBotStore.getState();
+    expect(state.hasToken).toBe(true);
+    expect(state.verifiedAccount).toEqual({ id: "botty", username: "Botty", isBot: true });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_oauth_login", { slot: "bot" });
+  });
+
+  it("captures errors in verifyError without setting hasToken", async () => {
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_oauth_login"
+        ? Promise.reject(new Error("state mismatch"))
+        : Promise.resolve(undefined),
+    );
+    await useLichessBotStore.getState().oauthLogin();
+    const state = useLichessBotStore.getState();
+    expect(state.hasToken).toBe(false);
+    expect(state.verifyError).toContain("state mismatch");
+  });
+});
+
 describe("verifyAccount", () => {
   it("populates verifiedAccount on success", async () => {
     mockedInvoke.mockResolvedValueOnce({ id: "botty", username: "Botty", isBot: true });
