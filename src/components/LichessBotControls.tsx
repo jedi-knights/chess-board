@@ -37,6 +37,8 @@ export function LichessBotControls() {
   const setEnginePath = useLichessBotStore((s) => s.setEnginePath);
   const movetimeMs = useLichessBotStore((s) => s.movetimeMs);
   const setMovetimeMs = useLichessBotStore((s) => s.setMovetimeMs);
+  const acceptRated = useLichessBotStore((s) => s.acceptRated);
+  const setAcceptRated = useLichessBotStore((s) => s.setAcceptRated);
 
   const status = useLichessBotStore((s) => s.status);
   const errorMessage = useLichessBotStore((s) => s.errorMessage);
@@ -187,6 +189,16 @@ export function LichessBotControls() {
           onChange={(e) => setMovetimeMs(Number(e.target.value))}
           disabled={listening}
         />
+      </label>
+      <label className="engine-field">
+        <input
+          type="checkbox"
+          checked={acceptRated}
+          onChange={(e) => setAcceptRated(e.target.checked)}
+          disabled={listening}
+        />
+        Accept rated challenges (off by default — a testing bot affects real
+        opponents&rsquo; ratings)
       </label>
       {!listening ? (
         <button onClick={() => startListening()} disabled={!canListen}>

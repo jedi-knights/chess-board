@@ -717,6 +717,83 @@ pub fn lichess_stop_events(state: State<'_, LichessEventConnection>) -> Result<(
     stop_stream_locked(&state.0)
 }
 
+/// Decline reasons Lichess accepts on `POST /api/challenge/{id}/decline`.
+/// Exactly this set -- anything else is a 400. Kept as a serde enum so a
+/// stray string from the frontend is rejected at deserialize time, same
+/// pattern as `TokenSlot`.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LichessDeclineReason {
+    #[serde(rename = "generic")]
+    Generic,
+    #[serde(rename = "later")]
+    Later,
+    #[serde(rename = "tooFast")]
+    TooFast,
+    #[serde(rename = "tooSlow")]
+    TooSlow,
+    #[serde(rename = "timeControl")]
+    TimeControl,
+    #[serde(rename = "rated")]
+    Rated,
+    #[serde(rename = "casual")]
+    Casual,
+    #[serde(rename = "standard")]
+    Standard,
+    #[serde(rename = "variant")]
+    Variant,
+    #[serde(rename = "noBot")]
+    NoBot,
+    #[serde(rename = "onlyBot")]
+    OnlyBot,
+}
+
+impl LichessDeclineReason {
+    fn as_wire(self) -> &'static str {
+        match self {
+            LichessDeclineReason::Generic => "generic",
+            LichessDeclineReason::Later => "later",
+            LichessDeclineReason::TooFast => "tooFast",
+            LichessDeclineReason::TooSlow => "tooSlow",
+            LichessDeclineReason::TimeControl => "timeControl",
+            LichessDeclineReason::Rated => "rated",
+            LichessDeclineReason::Casual => "casual",
+            LichessDeclineReason::Standard => "standard",
+            LichessDeclineReason::Variant => "variant",
+            LichessDeclineReason::NoBot => "noBot",
+            LichessDeclineReason::OnlyBot => "onlyBot",
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn lichess_challenge_decline(
+    account_cache: State<'_, SharedAccountCache>,
+    slot: TokenSlot,
+    challenge_id: String,
+    reason: LichessDeclineReason,
+) -> Result<(), String> {
+    let id = parse_game_id(&challenge_id)?;
+    let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/challenge/{id}/decline");
+    let response = client
+        .post(&url)
+        .bearer_auth(&token)
+        .form(&[("reason", reason.as_wire())])
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "lichess rejected declining challenge {id}: {status} {body}"
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn lichess_challenge_accept(
     account_cache: State<'_, SharedAccountCache>,
@@ -1087,6 +1164,63 @@ mod tests {
         cache_put(&cache, TokenSlot::Bot, bot.clone());
         assert_eq!(cache_get(&cache, TokenSlot::Human).unwrap().username, "H");
         assert_eq!(cache_get(&cache, TokenSlot::Bot).unwrap().username, "B");
+    }
+
+    #[test]
+    fn decline_reason_deserializes_from_the_exact_wire_tags_lichess_accepts() {
+        // Lichess rejects any other value with a 400 -- serde's enum tags
+        // are what guarantee a stray frontend string never reaches the API.
+        assert_eq!(
+            serde_json::from_str::<LichessDeclineReason>("\"variant\"").unwrap(),
+            LichessDeclineReason::Variant,
+        );
+        assert_eq!(
+            serde_json::from_str::<LichessDeclineReason>("\"timeControl\"").unwrap(),
+            LichessDeclineReason::TimeControl,
+        );
+        assert_eq!(
+            serde_json::from_str::<LichessDeclineReason>("\"later\"").unwrap(),
+            LichessDeclineReason::Later,
+        );
+        assert_eq!(
+            serde_json::from_str::<LichessDeclineReason>("\"rated\"").unwrap(),
+            LichessDeclineReason::Rated,
+        );
+        assert_eq!(
+            serde_json::from_str::<LichessDeclineReason>("\"generic\"").unwrap(),
+            LichessDeclineReason::Generic,
+        );
+    }
+
+    #[test]
+    fn decline_reason_rejects_anything_else() {
+        assert!(serde_json::from_str::<LichessDeclineReason>("\"unknown\"").is_err());
+        assert!(serde_json::from_str::<LichessDeclineReason>("\"\"").is_err());
+        assert!(serde_json::from_str::<LichessDeclineReason>("null").is_err());
+    }
+
+    #[test]
+    fn decline_reason_wire_string_roundtrips_through_deserialize() {
+        // Guards against future drift: if someone renames a wire tag but
+        // leaves as_wire returning the old value, requests would go out
+        // with the wrong reason. This ties both sides together.
+        for reason in [
+            LichessDeclineReason::Generic,
+            LichessDeclineReason::Later,
+            LichessDeclineReason::TooFast,
+            LichessDeclineReason::TooSlow,
+            LichessDeclineReason::TimeControl,
+            LichessDeclineReason::Rated,
+            LichessDeclineReason::Casual,
+            LichessDeclineReason::Standard,
+            LichessDeclineReason::Variant,
+            LichessDeclineReason::NoBot,
+            LichessDeclineReason::OnlyBot,
+        ] {
+            let json = format!("\"{}\"", reason.as_wire());
+            let parsed: LichessDeclineReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, reason);
+        }
     }
 
     #[test]

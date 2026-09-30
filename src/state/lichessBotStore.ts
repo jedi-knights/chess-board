@@ -3,10 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
+  decideChallenge,
   isTerminalStatus,
   parseLichessAccountEvent,
   parseLichessLine,
   type LichessAccountInfo,
+  type LichessChallengeEvent,
+  type LichessDeclineReason,
 } from "../lib/lichess";
 import { engineStoreForSide } from "./engineStore";
 import { useGameStore } from "./gameStore";
@@ -26,6 +29,11 @@ interface LichessBotStoreState {
    * in `lichessStore.ts` for the same rationale. */
   verifiedAccount: LichessAccountInfo | null;
   verifyError: string | null;
+  /** Persisted preference: whether to accept rated challenges. Default
+   * `false`, on purpose -- a bot testing an engine shouldn't affect
+   * other players' ratings unless the operator has explicitly opted in.
+   * See `decideChallenge` in `src/lib/lichess.ts` for the enforcement. */
+  acceptRated: boolean;
   /** This mode's engine choice, independent of the White/Black engine
    * slots -- Bot API mode doesn't know which color Lichess will assign
    * the bot until a challenge actually arrives, so it can't pin its
@@ -48,6 +56,7 @@ interface LichessBotStoreState {
   verifyAccount: () => Promise<void>;
   setEnginePath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
+  setAcceptRated: (v: boolean) => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
    * doc comment. The caller (the UI) is responsible for a separate,
    * explicit confirmation step before calling this. Returns whether it
@@ -75,8 +84,23 @@ function failBot(message: string) {
   useGameStore.getState().exitPlayMode();
 }
 
-async function handleChallenge(challengeId: string) {
-  logDebug(`auto-accepting challenge: ${challengeId}`);
+async function declineChallenge(challengeId: string, reason: LichessDeclineReason) {
+  logDebug(`declining challenge ${challengeId} (${reason})`);
+  try {
+    await invoke("lichess_challenge_decline", {
+      slot: BOT_SLOT,
+      challengeId,
+      reason,
+    });
+  } catch (err) {
+    // A single rejected/expired decline isn't fatal to the listening
+    // session -- same reasoning as accept failures below.
+    logDebug(`failed to decline challenge ${challengeId}: ${String(err)}`);
+  }
+}
+
+async function acceptChallenge(challengeId: string) {
+  logDebug(`accepting challenge: ${challengeId}`);
   try {
     await invoke("lichess_challenge_accept", { slot: BOT_SLOT, challengeId });
   } catch (err) {
@@ -85,6 +109,34 @@ async function handleChallenge(challengeId: string) {
     // tearing the whole connection down over one bad challenge.
     logDebug(`failed to accept challenge ${challengeId}: ${String(err)}`);
   }
+}
+
+async function handleChallenge(challenge: LichessChallengeEvent) {
+  const state = useLichessBotStore.getState();
+  const decision = decideChallenge(challenge, {
+    myAccountId: state.verifiedAccount?.id ?? null,
+    acceptRated: state.acceptRated,
+    activeGameId: state.activeGameId,
+  });
+  logDebug(
+    `challenge ${challenge.challengeId} from ${challenge.challenger?.id ?? "?"}: ` +
+      `variant=${challenge.variant} speed=${challenge.speed} rated=${challenge.rated} ` +
+      `initialFen=${challenge.initialFen ? "custom" : "startpos"} -> ${
+        decision.kind === "accept"
+          ? "accept"
+          : decision.kind === "decline"
+            ? `decline(${decision.reason})`
+            : `drop(${decision.because})`
+      }`,
+  );
+  if (decision.kind === "accept") {
+    await acceptChallenge(challenge.challengeId);
+  } else if (decision.kind === "decline") {
+    await declineChallenge(challenge.challengeId, decision.reason);
+  }
+  // "drop" deliberately does nothing -- e.g. self-challenges can't be
+  // declined (Lichess 400s a self-decline) and letting Lichess time
+  // them out is the correct behavior.
 }
 
 async function handleGameStart(gameId: string, botColor: "w" | "b") {
@@ -192,10 +244,32 @@ function installListenersOnce() {
   void listen<string>("lichess-event-stream", (event) => {
     const parsed = parseLichessAccountEvent(event.payload);
     if (!parsed) return;
-    if (parsed.type === "challenge") {
-      void handleChallenge(parsed.challengeId);
-    } else {
-      void handleGameStart(parsed.gameId, parsed.botColor);
+    switch (parsed.type) {
+      case "challenge":
+        void handleChallenge(parsed);
+        break;
+      case "gameStart":
+        void handleGameStart(parsed.gameId, parsed.botColor);
+        break;
+      case "challengeCanceled":
+        logDebug(`challenge ${parsed.challengeId} canceled by challenger`);
+        break;
+      case "challengeDeclined":
+        // The bot never issues outgoing challenges today, so this
+        // arrives only when Lichess echoes back our own decline. Log
+        // it for the timeline, but do nothing -- the decline was our
+        // own action.
+        logDebug(
+          `challenge ${parsed.challengeId} declined${parsed.reason ? ` (${parsed.reason})` : ""}`,
+        );
+        break;
+      case "gameFinish":
+        // Redundant with the terminal status inside the game stream,
+        // which also flips status to "listening". Kept as a defense-
+        // in-depth log line: if the game stream missed the terminal
+        // status for any reason, this confirms the game ended.
+        logDebug(`gameFinish event for ${parsed.gameId}`);
+        break;
     }
   });
 
@@ -230,6 +304,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       hasToken: false,
       verifiedAccount: null,
       verifyError: null,
+      acceptRated: false,
       enginePath: null,
       movetimeMs: 1000,
       status: "idle",
@@ -269,6 +344,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
 
       setEnginePath: (enginePath) => set({ enginePath }),
       setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
+      setAcceptRated: (acceptRated) => set({ acceptRated }),
 
       upgradeToBotAccount: async () => {
         logDebug("requesting bot account upgrade");
@@ -325,7 +401,11 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
     }),
     {
       name: "chess-board-lichess-bot-engine",
-      partialize: (state) => ({ enginePath: state.enginePath, movetimeMs: state.movetimeMs }),
+      partialize: (state) => ({
+        enginePath: state.enginePath,
+        movetimeMs: state.movetimeMs,
+        acceptRated: state.acceptRated,
+      }),
     },
   ),
 );
