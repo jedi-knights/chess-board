@@ -91,6 +91,36 @@ body {
   overflow-y: auto;
 }
 
+.side-panel.collapsed {
+  flex: 0 0 auto;
+  width: 2.5em;
+  padding: 1em 0.5em;
+  overflow: hidden;
+}
+
+.side-panel-toggle {
+  align-self: flex-start;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  padding: 0.3em 0.6em;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+.side-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1em;
+  min-width: 0;
+}
+
+.side-panel.collapsed .side-panel-content {
+  display: none;
+}
+
 .side-tabs {
   display: flex;
   gap: 0.25em;
