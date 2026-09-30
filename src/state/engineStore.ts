@@ -290,7 +290,16 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
             // stale "engine process exited unexpectedly" stuck around with
             // no way to clear it short of restarting the whole app.
             set({ status: "idle", lastInfo: null, searchInfoHistory: [], errorMessage: null });
-            useGameStore.getState().exitPlayMode();
+            // loadGame([]) resets the board back to the starting position
+            // (plies/ply cleared) in addition to exitPlayMode()'s own
+            // effect (mode back to "replay", selection cleared) -- a
+            // deliberate, user-requested Stop should leave a clean board
+            // to start the next game from, not the position the last game
+            // ended at. This is intentionally *not* shared with
+            // failEngine()'s crash path below (still just exitPlayMode()):
+            // a crash should leave the position on screen for diagnosis,
+            // not silently erase the evidence.
+            useGameStore.getState().loadGame([]);
           }
         },
 
