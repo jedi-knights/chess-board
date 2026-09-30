@@ -122,6 +122,15 @@ function PieceGlyph({ type, color }: { type: PieceOnSquare["type"]; color: Piece
   }, [texture]);
 
   return (
+    // rotation=[-PI/2,0,0] tips the plane from its default XY orientation
+    // (facing +Z) to lie flat in the XZ plane facing +Y -- i.e. straight up
+    // at the fixed top-down 2D camera (see BoardScene's cameraPosition for
+    // cameraMode "2d"). This must hold for every piece, both colors, both
+    // POV settings -- the camera flips its `up` vector between white/black
+    // POV, but this plane's world-space rotation never does, and it must
+    // not start doing so (e.g. via billboarding). Do not change this
+    // rotation without re-verifying every piece still renders face-up, not
+    // edge-on or upside-down, in both POV settings.
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
       <planeGeometry args={[0.75, 0.75]} />
       <meshBasicMaterial map={texture} transparent alphaTest={0.05} />
