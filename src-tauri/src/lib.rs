@@ -68,7 +68,15 @@ pub fn run() {
             lichess::lichess_challenge_user,
             lichess::lichess_challenge_ai,
             lichess::lichess_seek,
-            lichess::lichess_stop_seek
+            lichess::lichess_stop_seek,
+            lichess::lichess_resign,
+            lichess::lichess_abort,
+            lichess::lichess_draw,
+            lichess::lichess_claim_victory,
+            lichess::lichess_bot_resign,
+            lichess::lichess_bot_abort,
+            lichess::lichess_bot_draw,
+            lichess::lichess_bot_claim_victory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

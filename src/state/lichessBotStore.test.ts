@@ -538,6 +538,82 @@ describe("clock tracking annotates last-ply think-time", () => {
   });
 });
 
+describe("in-game actions", () => {
+  it("resign forwards the current activeGameId and hits the bot-slot endpoint", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ activeGameId: "gameA123", status: "playing" });
+    mockedInvoke.mockClear();
+
+    await useLichessBotStore.getState().resign();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_bot_resign", {
+      gameIdOrUrl: "gameA123",
+    });
+  });
+
+  it("abort / agreeToDraw / declineDraw / claimVictory forward the current game id", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ activeGameId: "gameA123", status: "playing" });
+    mockedInvoke.mockClear();
+
+    await useLichessBotStore.getState().abort();
+    await useLichessBotStore.getState().agreeToDraw();
+    await useLichessBotStore.getState().declineDraw();
+    await useLichessBotStore.getState().claimVictory();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_bot_abort", { gameIdOrUrl: "gameA123" });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_bot_draw", {
+      gameIdOrUrl: "gameA123",
+      accept: true,
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_bot_draw", {
+      gameIdOrUrl: "gameA123",
+      accept: false,
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_bot_claim_victory", {
+      gameIdOrUrl: "gameA123",
+    });
+  });
+
+  it("actions are no-ops when there is no active game id", async () => {
+    await startBotListening();
+    // No activeGameId set; setState left it null.
+    mockedInvoke.mockClear();
+    await useLichessBotStore.getState().resign();
+    await useLichessBotStore.getState().claimVictory();
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_bot_resign", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith(
+      "lichess_bot_claim_victory",
+      expect.anything(),
+    );
+  });
+});
+
+describe("opponentGone on the bot-game stream", () => {
+  it("captures gone=true and clears on gone=false", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ status: "playing", activeGameId: "gameA123" });
+
+    emit(
+      "lichess-bot-game-stream",
+      JSON.stringify({ type: "opponentGone", gone: true, claimWinInSeconds: 45 }),
+    );
+    expect(useLichessBotStore.getState().opponentGone).toEqual({
+      gone: true,
+      claimWinInSeconds: 45,
+    });
+
+    emit(
+      "lichess-bot-game-stream",
+      JSON.stringify({ type: "opponentGone", gone: false }),
+    );
+    expect(useLichessBotStore.getState().opponentGone).toEqual({
+      gone: false,
+      claimWinInSeconds: null,
+    });
+  });
+});
+
 describe("upgradeToBotAccount", () => {
   it("returns true on success and invalidates any pre-upgrade verified account", async () => {
     useLichessBotStore.setState({

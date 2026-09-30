@@ -6,11 +6,13 @@ import {
   decideChallenge,
   isTerminalStatus,
   parseLichessLine,
+  parseLichessOpponentGone,
   type LichessAccountEvent,
   type LichessAccountInfo,
   type LichessChallengeEvent,
   type LichessDeclineReason,
   type LichessMoveUpdate,
+  type LichessOpponentGone,
 } from "../lib/lichess";
 import { installLichessEventBusOnce } from "../lib/lichessEventBus";
 import type { GoOptions } from "../lib/uci";
@@ -45,6 +47,10 @@ interface LichessBotStoreState {
    * with lichessStore. Populated by every `gameState` update, cleared
    * on game end and on stopListening. */
   serverClocks: LiveClocks | null;
+  /** Opponent-gone state from the game stream. Same shape and role as
+   * `lichessStore.opponentGone`; `LiveGameActions` reads it to render
+   * the countdown and enable the Claim Victory button. */
+  opponentGone: LichessOpponentGone | null;
   /** This mode's engine choice, independent of the White/Black engine
    * slots -- Bot API mode doesn't know which color Lichess will assign
    * the bot until a challenge actually arrives, so it can't pin its
@@ -81,6 +87,14 @@ interface LichessBotStoreState {
   upgradeToBotAccount: () => Promise<boolean>;
   startListening: () => Promise<void>;
   stopListening: () => Promise<void>;
+  /** In-game actions (Bot API). Same set as the human-mode counterpart:
+   * resign, abort, draw agree/decline, claim-victory. All target the
+   * currently-active game id; `null` is a defensive no-op. */
+  resign: () => Promise<void>;
+  abort: () => Promise<void>;
+  agreeToDraw: () => Promise<void>;
+  declineDraw: () => Promise<void>;
+  claimVictory: () => Promise<void>;
   /** Called by `lichessEventBus` for every event that arrives on the
    * account event stream while `engine-vs-lichess` is the active mode.
    * The bus, not this store, owns the raw Tauri listener. */
@@ -221,6 +235,7 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
     lastSentUci: null,
     errorMessage: null,
     serverClocks: null,
+    opponentGone: null,
   });
 
   // Same ordering as EngineControls/LichessControls: reset the board
@@ -372,6 +387,7 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
       status: "listening",
       activeGameId: null,
       serverClocks: null,
+      opponentGone: null,
     });
     useGameStore.getState().exitPlayMode();
     invoke("lichess_stop_game").catch(() => {});
@@ -445,7 +461,19 @@ function installBotGameStreamListenersOnce() {
   listenersInstalled = true;
 
   void listen<string>("lichess-bot-game-stream", (event) => {
-    applyIncomingBotMoves(parseLichessLine(event.payload));
+    // Same dual-parse shape as lichessStore's human-mode listener --
+    // moves and opponentGone lines share the same NDJSON channel.
+    const move = parseLichessLine(event.payload);
+    if (move) applyIncomingBotMoves(move);
+    const gone = parseLichessOpponentGone(event.payload);
+    if (gone) {
+      useLichessBotStore.setState({ opponentGone: gone });
+      logDebug(
+        `opponent ${gone.gone ? "gone" : "back"}${
+          gone.claimWinInSeconds !== null ? ` (claim in ${gone.claimWinInSeconds}s)` : ""
+        }`,
+      );
+    }
   });
 
   void listen<string>("lichess-bot-game-exit", (event) => {
@@ -472,6 +500,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       acceptRated: false,
       lagMarginMs: 100,
       serverClocks: null,
+      opponentGone: null,
       enginePath: null,
       movetimeMs: 1000,
       status: "idle",
@@ -557,6 +586,61 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         }
       },
 
+      resign: async () => {
+        const id = useLichessBotStore.getState().activeGameId;
+        if (!id) return;
+        logDebug("resign requested");
+        try {
+          await invoke("lichess_bot_resign", { gameIdOrUrl: id });
+        } catch (err) {
+          failBot(String(err));
+        }
+      },
+
+      abort: async () => {
+        const id = useLichessBotStore.getState().activeGameId;
+        if (!id) return;
+        logDebug("abort requested");
+        try {
+          await invoke("lichess_bot_abort", { gameIdOrUrl: id });
+        } catch (err) {
+          failBot(String(err));
+        }
+      },
+
+      agreeToDraw: async () => {
+        const id = useLichessBotStore.getState().activeGameId;
+        if (!id) return;
+        logDebug("draw/yes requested");
+        try {
+          await invoke("lichess_bot_draw", { gameIdOrUrl: id, accept: true });
+        } catch (err) {
+          failBot(String(err));
+        }
+      },
+
+      declineDraw: async () => {
+        const id = useLichessBotStore.getState().activeGameId;
+        if (!id) return;
+        logDebug("draw/no requested");
+        try {
+          await invoke("lichess_bot_draw", { gameIdOrUrl: id, accept: false });
+        } catch (err) {
+          failBot(String(err));
+        }
+      },
+
+      claimVictory: async () => {
+        const id = useLichessBotStore.getState().activeGameId;
+        if (!id) return;
+        logDebug("claim-victory requested");
+        try {
+          await invoke("lichess_bot_claim_victory", { gameIdOrUrl: id });
+        } catch (err) {
+          failBot(String(err));
+        }
+      },
+
       handleAccountEvent: (event) => routeAccountEvent(event),
 
       handleEventStreamExit: (reason) => {
@@ -583,6 +667,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
             errorMessage: null,
             activeGameId: null,
             serverClocks: null,
+            opponentGone: null,
           });
           useGameStore.getState().exitPlayMode();
         }

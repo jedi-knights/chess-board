@@ -5,6 +5,7 @@ import {
   parseBotOnlineList,
   parseLichessAccountEvent,
   parseLichessLine,
+  parseLichessOpponentGone,
   type ChallengeDecisionContext,
   type LichessChallengeEvent,
 } from "./lichess";
@@ -124,6 +125,43 @@ describe("parseLichessLine", () => {
 
   it("returns null for a gameState line missing required fields", () => {
     expect(parseLichessLine(JSON.stringify({ type: "gameState" }))).toBeNull();
+  });
+});
+
+describe("parseLichessOpponentGone", () => {
+  it("parses gone=true with a claimWinInSeconds countdown", () => {
+    const line = JSON.stringify({
+      type: "opponentGone",
+      gone: true,
+      claimWinInSeconds: 30,
+    });
+    expect(parseLichessOpponentGone(line)).toEqual({
+      gone: true,
+      claimWinInSeconds: 30,
+    });
+  });
+
+  it("parses gone=false as the opponent returning (claim clears)", () => {
+    const line = JSON.stringify({ type: "opponentGone", gone: false });
+    expect(parseLichessOpponentGone(line)).toEqual({
+      gone: false,
+      claimWinInSeconds: null,
+    });
+  });
+
+  it("returns null claimWinInSeconds when the game type doesn't support claim (correspondence)", () => {
+    const line = JSON.stringify({ type: "opponentGone", gone: true });
+    expect(parseLichessOpponentGone(line)).toEqual({
+      gone: true,
+      claimWinInSeconds: null,
+    });
+  });
+
+  it("returns null for non-opponentGone lines", () => {
+    expect(
+      parseLichessOpponentGone(JSON.stringify({ type: "gameState", moves: "", status: "started" })),
+    ).toBeNull();
+    expect(parseLichessOpponentGone("not json")).toBeNull();
   });
 });
 

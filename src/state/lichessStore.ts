@@ -5,9 +5,11 @@ import type { Ply } from "../lib/chessRules";
 import {
   isTerminalStatus,
   parseLichessLine,
+  parseLichessOpponentGone,
   type LichessAccountEvent,
   type LichessAccountInfo,
   type LichessMoveUpdate,
+  type LichessOpponentGone,
 } from "../lib/lichess";
 import { installLichessEventBusOnce } from "../lib/lichessEventBus";
 import { useGameStore } from "./gameStore";
@@ -105,6 +107,11 @@ interface LichessStoreState {
   /** Most recent server clock snapshot for the live game. `null` until
    * the first `gameFull`/`gameState` with clock fields arrives. */
   serverClocks: LiveClocks | null;
+  /** Opponent-gone state from the game stream's `opponentGone` line.
+   * `null` when the opponent is present (or before the first such line).
+   * `LiveGameActions` reads `claimWinInSeconds` to render the countdown
+   * and enable the Claim Victory button. */
+  opponentGone: LichessOpponentGone | null;
 
   refreshHasToken: () => Promise<void>;
   setToken: (token: string) => Promise<void>;
@@ -138,6 +145,18 @@ interface LichessStoreState {
    * challenge on lichess.org and I want to play it here". */
   joinGameById: (gameIdOrUrl: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  /** In-game actions (Board API). Each POSTs against the current
+   * `gameId`; a `null` gameId is a no-op (the UI already gates on it,
+   * but the store stays defensive). */
+  resign: () => Promise<void>;
+  abort: () => Promise<void>;
+  /** Agree to a draw (Lichess treats /draw/yes as both "offer" and
+   * "accept" depending on whether an opponent's offer is pending). */
+  agreeToDraw: () => Promise<void>;
+  declineDraw: () => Promise<void>;
+  /** Claim victory when the opponent has been gone long enough for
+   * Lichess's `claimWinInSeconds` countdown to have elapsed. */
+  claimVictory: () => Promise<void>;
   /** Called by `lichessEventBus` for every event on the account event
    * stream while `human-vs-lichess` is the active mode. `gameStart`
    * auto-connects the game stream; other events are logged for the
@@ -319,7 +338,21 @@ function installLichessGameListenersOnce() {
   listenersInstalled = true;
 
   void listen<string>("lichess-game-stream", (event) => {
-    applyIncomingMoves(parseLichessLine(event.payload));
+    // Every incoming line is checked against both parsers -- Lichess
+    // multiplexes gameFull/gameState/opponentGone (and chatLine, which
+    // both parsers correctly return `null` for) onto the same stream.
+    // Running both is cheaper than dispatching on `type` in a third seam.
+    const move = parseLichessLine(event.payload);
+    if (move) applyIncomingMoves(move);
+    const gone = parseLichessOpponentGone(event.payload);
+    if (gone) {
+      useLichessStore.setState({ opponentGone: gone });
+      logDebug(
+        `opponent ${gone.gone ? "gone" : "back"}${
+          gone.claimWinInSeconds !== null ? ` (claim in ${gone.claimWinInSeconds}s)` : ""
+        }`,
+      );
+    }
   });
 
   void listen<string>("lichess-game-exit", (event) => {
@@ -367,6 +400,7 @@ function primeForNewSession(): void {
     lastSentUci: null,
     gameId: null,
     serverClocks: null,
+    opponentGone: null,
   });
 }
 
@@ -420,6 +454,7 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
   errorMessage: null,
   lastSentUci: null,
   serverClocks: null,
+  opponentGone: null,
 
   refreshHasToken: async () => {
     const hasToken = await invoke<boolean>("lichess_token_has", { slot: HUMAN_SLOT }).catch(
@@ -571,6 +606,61 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
     }
   },
 
+  resign: async () => {
+    const gameId = useLichessStore.getState().gameId;
+    if (!gameId) return;
+    logDebug("resign requested");
+    try {
+      await invoke("lichess_resign", { gameIdOrUrl: gameId });
+    } catch (err) {
+      failLichess(String(err));
+    }
+  },
+
+  abort: async () => {
+    const gameId = useLichessStore.getState().gameId;
+    if (!gameId) return;
+    logDebug("abort requested");
+    try {
+      await invoke("lichess_abort", { gameIdOrUrl: gameId });
+    } catch (err) {
+      failLichess(String(err));
+    }
+  },
+
+  agreeToDraw: async () => {
+    const gameId = useLichessStore.getState().gameId;
+    if (!gameId) return;
+    logDebug("draw/yes requested");
+    try {
+      await invoke("lichess_draw", { gameIdOrUrl: gameId, accept: true });
+    } catch (err) {
+      failLichess(String(err));
+    }
+  },
+
+  declineDraw: async () => {
+    const gameId = useLichessStore.getState().gameId;
+    if (!gameId) return;
+    logDebug("draw/no requested");
+    try {
+      await invoke("lichess_draw", { gameIdOrUrl: gameId, accept: false });
+    } catch (err) {
+      failLichess(String(err));
+    }
+  },
+
+  claimVictory: async () => {
+    const gameId = useLichessStore.getState().gameId;
+    if (!gameId) return;
+    logDebug("claim-victory requested");
+    try {
+      await invoke("lichess_claim_victory", { gameIdOrUrl: gameId });
+    } catch (err) {
+      failLichess(String(err));
+    }
+  },
+
   disconnect: async () => {
     logDebug("disconnect requested");
     try {
@@ -584,6 +674,7 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
         errorMessage: null,
         gameId: null,
         serverClocks: null,
+        opponentGone: null,
       });
       useGameStore.getState().exitPlayMode();
     }

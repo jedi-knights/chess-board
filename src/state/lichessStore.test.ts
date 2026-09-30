@@ -479,6 +479,104 @@ describe("lichess-game-stream listener", () => {
   });
 });
 
+describe("in-game actions", () => {
+  it("resign forwards the current game id and hits the human-slot endpoint", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().resign();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_resign", { gameIdOrUrl: "game-1" });
+  });
+
+  it("abort forwards the current game id", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().abort();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_abort", { gameIdOrUrl: "game-1" });
+  });
+
+  it("agreeToDraw sends accept=true and declineDraw sends accept=false", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().agreeToDraw();
+    await useLichessStore.getState().declineDraw();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_draw", {
+      gameIdOrUrl: "game-1",
+      accept: true,
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_draw", {
+      gameIdOrUrl: "game-1",
+      accept: false,
+    });
+  });
+
+  it("claimVictory hits the claim-victory endpoint", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().claimVictory();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_claim_victory", {
+      gameIdOrUrl: "game-1",
+    });
+  });
+
+  it("actions are no-ops when there is no active game id", async () => {
+    // status "idle" and gameId "null" from beforeEach.
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().resign();
+    await useLichessStore.getState().abort();
+    await useLichessStore.getState().agreeToDraw();
+    await useLichessStore.getState().claimVictory();
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_resign", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_abort", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_draw", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_claim_victory", expect.anything());
+  });
+
+  it("a rejected action fails the connection through failLichess", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_resign"
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(undefined),
+    );
+    await useLichessStore.getState().resign();
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("network down");
+    expect(useGameStore.getState().mode).toBe("replay");
+  });
+});
+
+describe("opponentGone from the game stream", () => {
+  it("captures gone=true with a claimWinInSeconds countdown into store state", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({ type: "opponentGone", gone: true, claimWinInSeconds: 30 }),
+    );
+
+    expect(useLichessStore.getState().opponentGone).toEqual({
+      gone: true,
+      claimWinInSeconds: 30,
+    });
+  });
+
+  it("clears opponentGone when the opponent returns", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({ type: "opponentGone", gone: true, claimWinInSeconds: 30 }),
+    );
+    emit("lichess-game-stream", JSON.stringify({ type: "opponentGone", gone: false }));
+
+    expect(useLichessStore.getState().opponentGone).toEqual({
+      gone: false,
+      claimWinInSeconds: null,
+    });
+  });
+});
+
 describe("lichess-game-exit listener", () => {
   it("fails the connection when it was actually connected", async () => {
     await useLichessStore.getState().joinGameById("game-1");
