@@ -1,9 +1,10 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { fenToPieces } from "../lib/chessRules";
 import { squareName, squareToPosition } from "../lib/boardGeometry";
 import { getBoardPalette, type BoardPalette } from "../lib/boardPalettes";
+import { createWoodTexture } from "../lib/woodTexture";
 import { Piece } from "./Piece";
 import { MoveHighlights } from "./MoveHighlights";
 import { useBoardThemeStore } from "../state/boardThemeStore";
@@ -16,6 +17,19 @@ const SCENE_BACKGROUND: Record<ResolvedTheme, string> = {
 };
 
 function BoardSquares({ palette }: { palette: BoardPalette }) {
+  // One texture per color, shared across all 32 squares of that color --
+  // not one per square. Regenerated only when the palette's own colors
+  // change, and disposed on the way out so switching palettes repeatedly
+  // doesn't leak GPU texture memory.
+  const lightTexture = useMemo(() => createWoodTexture(palette.light), [palette.light]);
+  const darkTexture = useMemo(() => createWoodTexture(palette.dark), [palette.dark]);
+  useEffect(() => {
+    return () => {
+      lightTexture.dispose();
+      darkTexture.dispose();
+    };
+  }, [lightTexture, darkTexture]);
+
   const squares = [];
   for (let file = 0; file < 8; file++) {
     for (let rank = 0; rank < 8; rank++) {
@@ -33,7 +47,7 @@ function BoardSquares({ palette }: { palette: BoardPalette }) {
           }}
         >
           <planeGeometry args={[1, 1]} />
-          <meshStandardMaterial color={isLight ? palette.light : palette.dark} />
+          <meshStandardMaterial map={isLight ? lightTexture : darkTexture} roughness={0.75} />
         </mesh>,
       );
     }
