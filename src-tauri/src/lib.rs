@@ -1,6 +1,7 @@
 mod debug_log;
 mod engine;
 mod lichess;
+mod menu;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -16,6 +17,9 @@ pub fn run() {
             // A fresh debug.log per session, per the mandate that it must
             // never grow unbounded across a long-running dev session.
             let _ = debug_log::clear(&app.handle().clone());
+            let view_menu = menu::build(app)?;
+            app.set_menu(view_menu)?;
+            app.on_menu_event(menu::handle_event);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -24,6 +28,8 @@ pub fn run() {
             engine::engine_stop,
             debug_log::debug_log_append,
             debug_log::debug_log_clear,
+            menu::sync_view_menu,
+            menu::set_game_mode_menu_enabled,
             lichess::lichess_export_pgn,
             lichess::lichess_token_set,
             lichess::lichess_token_has,
