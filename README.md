@@ -145,7 +145,7 @@ pnpm tauri build     # full desktop app bundle
 
 ### Releasing
 
-Push a `v*` tag (e.g. `v0.1.1`) to publish a universal macOS build (Intel + Apple Silicon) as a GitHub Release — see `.github/workflows/release.yml`. The `.app`/`.dmg` are unsigned (no Apple Developer certificate configured), so Gatekeeper will show an "unidentified developer" prompt on first launch; right-click > Open works around it.
+Push a `v*` tag (e.g. `v0.1.1`) to publish a universal macOS build (Intel + Apple Silicon) as a GitHub Release — see `.github/workflows/release.yml`. The build is signed with a real Apple Developer ID certificate and notarized (see `docs/macos-code-signing.md` for the six `APPLE_*` secrets this requires and how to (re)generate them), so installing is a normal double-click with no Gatekeeper prompt.
 
 ```bash
 git tag v0.1.1

@@ -21,6 +21,10 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    # Default 360m job timeout would let a hung codesign/notarization step
+    # (e.g. bad Apple credentials causing notarytool to poll indefinitely)
+    # burn a runner for hours before GitHub kills it. Fail fast instead.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -45,15 +49,23 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # No Apple Developer signing identity is configured here -- the
-      # resulting .app/.dmg is unsigned and un-notarized. Gatekeeper will
-      # show an "unidentified developer" prompt on first launch (right-
-      # click > Open works around it). Fine for a personal Homebrew tap;
-      # revisit if this ever needs to reach users who can't do that.
+      # APPLE_* secrets sign + notarize the .app/.dmg with a real Developer ID
+      # Application certificate instead of Tauri's default ad-hoc signature,
+      # which Gatekeeper rejects outright ("app is damaged") since ad-hoc
+      # signing doesn't cover the bundle's resources. tauri-action reads
+      # these directly -- see docs/macos-code-signing.md for how to
+      # (re)generate them, and https://v2.tauri.app/distribute/sign/macos/
+      # for what each one does.
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: "chess-board ${{ inputs.tag || github.ref_name }}"
