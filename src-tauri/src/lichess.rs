@@ -11,12 +11,109 @@
 //! reads it fresh from the keychain rather than having it passed in from JS.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinHandle;
+
+/// Idle-timeout on the game/event NDJSON streams. Lichess emits `\n`
+/// keep-alive lines on quiet streams, so 20 s of *total* silence means
+/// the underlying connection has died -- classic TCP-half-open failure
+/// modes don't surface any I/O error, they just stop delivering bytes.
+const STREAM_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Per-request connect-timeout on the reqwest client. The one-shot
+/// requests (verify, challenge, resign, ...) also get a total timeout
+/// via `new_client()`; streaming requests use `new_stream_client()`
+/// which has *only* the connect timeout so a legitimately-idle stream
+/// isn't killed prematurely (the 20 s idle detection in
+/// `pump_ndjson_stream` handles that side).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-request total timeout on the one-shot (non-streaming) client.
+/// Lichess's synchronous endpoints (`/api/challenge/{u}`, moves, etc.)
+/// respond within a few hundred ms in practice; 30 s is generous
+/// headroom for slow networks without being long enough to leave a
+/// hung request queued behind our outbound mutex.
+const ONESHOT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait after a 429 before retrying. Lichess's stated
+/// policy is "back off for 60 seconds"; hard-coding the pause here
+/// avoids interpreting the Retry-After header (which they don't
+/// always send) and gives every burst-limited caller the same recovery.
+const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(60);
+
+/// Exponential-backoff schedule for reconnecting a dropped stream.
+/// 1 s -> 2 s -> 4 s -> 8 s -> 16 s -> 30 s (cap). Reset on any
+/// successful bytes so a stream that succeeds then dies gets a fresh
+/// fast retry the next time. Pure struct, tested in isolation.
+#[derive(Debug, Default)]
+struct RetrySchedule {
+    attempt: u32,
+}
+
+impl RetrySchedule {
+    const CAP_SECS: u64 = 30;
+    fn new() -> Self {
+        RetrySchedule::default()
+    }
+    fn next(&mut self) -> Duration {
+        // 1 << attempt for attempt in {0,1,2,3,4} = {1,2,4,8,16}, then
+        // cap at 30 s. saturating_add so attempt can't overflow
+        // regardless of how long the reconnect loop runs.
+        let secs = 1u64.checked_shl(self.attempt).unwrap_or(Self::CAP_SECS).min(Self::CAP_SECS);
+        self.attempt = self.attempt.saturating_add(1);
+        Duration::from_secs(secs)
+    }
+    fn reset(&mut self) {
+        self.attempt = 0;
+    }
+}
+
+/// Serializes every authenticated POST to Lichess so a bursty user
+/// action (e.g. rapid-fire draw offers) can't race itself into a 429
+/// unnecessarily. Static because the mutex has the same lifetime as
+/// the app and threading a State through every POST-making command
+/// would double their signatures.
+fn outbound_mutex() -> &'static tokio::sync::Mutex<()> {
+    static M: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    M.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Splits completed newline-terminated lines out of a byte buffer. Each
+/// returned string is a full, UTF-8-decoded, non-empty NDJSON line.
+/// Partial bytes at the end of the buffer -- including the fragment of
+/// a multi-byte UTF-8 codepoint split across a chunk boundary -- are
+/// left in place for the next `pop_lines` call.
+///
+/// Pre-PR-6 the pump decoded each chunk with `from_utf8_lossy` and
+/// then split; that corrupts multi-byte characters split across chunks
+/// (a common shape when streaming user-supplied challenge messages or
+/// usernames with accents).
+fn pop_lines(buffer: &mut Vec<u8>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+        let mut line: Vec<u8> = buffer.drain(..=pos).collect();
+        // Drop the trailing '\n'.
+        line.pop();
+        // Drop a trailing '\r' if present (some HTTP servers send CRLF).
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        // Decode UTF-8 across the *full* line, not per-chunk. A
+        // malformed line silently drops -- same policy as pre-PR-6.
+        if let Ok(s) = String::from_utf8(line) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+    out
+}
 
 const GAME_ID_LEN: usize = 8;
 const KEYRING_SERVICE: &str = "com.jediknights.chessboard";
@@ -529,48 +626,199 @@ fn stop_stream_locked(state: &SharedLichessState) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads an NDJSON response body, one line per Tauri event. Used for both
-/// a specific game's move stream and the account-wide event stream --
-/// they're the same wire shape (newline-delimited JSON), just different
-/// event names and different content. Runs until the stream closes or the
-/// task is aborted by `stop_stream_locked`.
+/// Whether the pump exited on a recoverable condition (reconnect) or an
+/// unrecoverable one (give up). The retry loop reads this to decide
+/// whether to sleep-and-retry or emit `exit_event` and stop.
+enum PumpOutcome {
+    /// Stream ended, timed out, or errored -- worth reconnecting.
+    Retry(String),
+    /// Structural failure the caller shouldn't retry through (e.g. an
+    /// impossible-state guard). Unused today but kept as a shape so a
+    /// future addition can escape the retry loop deliberately.
+    #[allow(dead_code)]
+    GiveUp(String),
+}
+
+/// Reads an NDJSON response body, emitting one Tauri event per complete
+/// line. Returns when the stream ends, errors, or goes silent for
+/// `STREAM_KEEPALIVE_TIMEOUT`. The caller decides whether to retry or
+/// bubble up as a final exit -- see `stream_with_reconnect`.
+///
+/// Pre-PR-6 this decoded each chunk with `from_utf8_lossy` before
+/// splitting; that corrupted any multi-byte UTF-8 codepoint that
+/// happened to straddle a chunk boundary. Now the buffer is bytes and
+/// UTF-8 decoding happens per whole line (see `pop_lines`).
 async fn pump_ndjson_stream(
     app: AppHandle,
     response: reqwest::Response,
     line_event: &'static str,
-    exit_event: &'static str,
-) {
+    schedule: &mut RetrySchedule,
+) -> PumpOutcome {
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer: Vec<u8> = Vec::new();
+    // Any complete line at all resets the backoff schedule -- a stream
+    // that produced any real data before dying gets a fresh fast retry.
+    let mut got_any_line = false;
     loop {
-        match stream.next().await {
-            Some(Ok(chunk)) => {
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(newline) = buffer.find('\n') {
-                    let line = buffer[..newline].trim().to_string();
-                    buffer.drain(..=newline);
-                    if !line.is_empty() {
-                        let _ = app.emit(line_event, line);
+        match tokio::time::timeout(STREAM_KEEPALIVE_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                buffer.extend_from_slice(&chunk);
+                for line in pop_lines(&mut buffer) {
+                    got_any_line = true;
+                    let _ = app.emit(line_event, line);
+                }
+            }
+            Ok(Some(Err(e))) => {
+                if got_any_line {
+                    schedule.reset();
+                }
+                return PumpOutcome::Retry(format!("stream error: {e}"));
+            }
+            Ok(None) => {
+                if got_any_line {
+                    schedule.reset();
+                }
+                return PumpOutcome::Retry("stream closed".to_string());
+            }
+            Err(_elapsed) => {
+                if got_any_line {
+                    schedule.reset();
+                }
+                return PumpOutcome::Retry(format!(
+                    "no data for {}s -- assumed dead",
+                    STREAM_KEEPALIVE_TIMEOUT.as_secs()
+                ));
+            }
+        }
+    }
+}
+
+/// Wraps the GET-a-stream-then-pump loop with exponential-backoff
+/// reconnect. Every drop (EOF, timeout, network error) sleeps for the
+/// current backoff and retries the request. `exit_event` only fires
+/// on an unrecoverable HTTP status (401, 404, ...) or a `GiveUp`
+/// outcome; transient failures stay silent and the frontend sees no
+/// event -- movesToApply / applyDerivedControllers are idempotent so
+/// a reconnect just re-syncs from `gameFull`.
+async fn stream_with_reconnect<F>(
+    app: AppHandle,
+    mut make_request: F,
+    line_event: &'static str,
+    exit_event: &'static str,
+) where
+    F: FnMut() -> reqwest::RequestBuilder + Send + 'static,
+{
+    let mut schedule = RetrySchedule::new();
+    loop {
+        let request = make_request();
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    let _ = crate::debug_log::append(
+                        &app,
+                        &format!(
+                            "[lichess] stream 429; pausing {}s",
+                            RATE_LIMIT_PAUSE.as_secs()
+                        ),
+                    );
+                    tokio::time::sleep(RATE_LIMIT_PAUSE).await;
+                    continue;
+                }
+                if !status.is_success() {
+                    // 401/403 mean the token was revoked; 404 means
+                    // the game is gone; other 4xx/5xx are similarly
+                    // fatal for this stream. Retry wouldn't help --
+                    // surface as an exit so the frontend can fail
+                    // the connection cleanly.
+                    let _ = app.emit(
+                        exit_event,
+                        format!("lichess returned {status}"),
+                    );
+                    return;
+                }
+                match pump_ndjson_stream(app.clone(), response, line_event, &mut schedule).await {
+                    PumpOutcome::Retry(reason) => {
+                        // Sleep-and-retry silently. Log to debug.log
+                        // so a stuck reconnect loop is diagnosable
+                        // after the fact, but don't emit an exit --
+                        // the frontend's movesToApply/
+                        // applyDerivedControllers are idempotent so a
+                        // reconnect just re-syncs from the fresh
+                        // gameFull.
+                        let _ = crate::debug_log::append(
+                            &app,
+                            &format!("[lichess] stream ended: {reason}; reconnecting"),
+                        );
+                    }
+                    PumpOutcome::GiveUp(reason) => {
+                        let _ = app.emit(exit_event, reason);
+                        return;
                     }
                 }
             }
-            Some(Err(e)) => {
-                let _ = app.emit(exit_event, format!("stream error: {e}"));
-                return;
-            }
-            None => {
-                let _ = app.emit(exit_event, "stream closed".to_string());
-                return;
+            Err(e) => {
+                // Network error before headers even arrived -- same
+                // recovery as a mid-stream drop.
+                let _ = crate::debug_log::append(
+                    &app,
+                    &format!("[lichess] stream connect failed: {e}; retrying"),
+                );
             }
         }
+        tokio::time::sleep(schedule.next()).await;
     }
 }
 
 fn new_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent("chess-board (https://github.com/jedi-knights/chess-board)")
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(ONESHOT_TIMEOUT)
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))
+}
+
+/// Client for streaming requests -- has the same connect timeout as the
+/// one-shot client but no *total* timeout, because streams stay open
+/// indefinitely. The 20 s idle-timeout inside `pump_ndjson_stream`
+/// handles half-open connections instead.
+fn new_stream_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("chess-board (https://github.com/jedi-knights/chess-board)")
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))
+}
+
+/// Sends a one-shot authenticated POST through the outbound serialization
+/// mutex, with a single 60 s retry on 429. Returns the successful
+/// response, or a formatted error on network failure or a non-success
+/// status. Every POST-making command should route through this rather
+/// than calling `.send()` directly, so a burst can't race itself into
+/// a 429 unnecessarily.
+async fn post_with_retry(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, String> {
+    let _guard = outbound_mutex().lock().await;
+    let clone = request
+        .try_clone()
+        .ok_or_else(|| "internal: request not cloneable for retry".to_string())?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(response);
+    }
+    // 429 -- honor Lichess's stated 60 s pause and try one more time.
+    // Holding the outbound mutex through the sleep blocks *other*
+    // POSTs from also getting 429'd during the pause window.
+    tokio::time::sleep(RATE_LIMIT_PAUSE).await;
+    clone
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess after 429 pause: {e}"))
 }
 
 /// Shared body of `lichess_stream_game`/`lichess_bot_stream_game` -- `kind`
@@ -600,21 +848,22 @@ async fn stream_game_impl(
     // without explicitly disconnecting first.
     stop_stream_locked(&shared)?;
 
-    let client = new_client()?;
+    let client = new_stream_client()?;
     let url = format!("https://lichess.org/api/{kind}/game/stream/{game_id}");
-    let response = client
-        .get(&url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("lichess returned {status} for game {game_id}"));
-    }
-
-    let task = tokio::spawn(pump_ndjson_stream(app, response, line_event, exit_event));
+    // Spawn the reconnect loop directly. The initial GET is inside
+    // `stream_with_reconnect`, so this command returns immediately once
+    // the task is queued. A first-attempt failure (network unreachable,
+    // stale DNS) becomes a retry, not a returned error -- matches how
+    // the reconnect model works for subsequent drops.
+    let make_request = move || {
+        client
+            .get(&url)
+            .bearer_auth(&token)
+    };
+    let task = tokio::spawn(async move {
+        stream_with_reconnect(app, make_request, line_event, exit_event).await;
+    });
     lock(&shared)?.stream_task = Some(task);
     Ok(())
 }
@@ -679,12 +928,7 @@ async fn make_move_impl(
 
     let client = new_client()?;
     let url = format!("https://lichess.org/api/{kind}/game/{game_id}/move/{uci_move}");
-    let response = client
-        .post(&url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(client.post(&url).bearer_auth(&token)).await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -748,27 +992,21 @@ pub async fn lichess_stream_events(
     let shared = state.0.clone();
     stop_stream_locked(&shared)?;
 
-    let client = new_client()?;
-    let response = client
-        .get("https://lichess.org/api/stream/event")
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "lichess returned {status} for the account event stream"
-        ));
-    }
-
-    let task = tokio::spawn(pump_ndjson_stream(
-        app,
-        response,
-        "lichess-event-stream",
-        "lichess-event-exit",
-    ));
+    let client = new_stream_client()?;
+    let make_request = move || {
+        client
+            .get("https://lichess.org/api/stream/event")
+            .bearer_auth(&token)
+    };
+    let task = tokio::spawn(async move {
+        stream_with_reconnect(
+            app,
+            make_request,
+            "lichess-event-stream",
+            "lichess-event-exit",
+        )
+        .await;
+    });
     lock(&shared)?.stream_task = Some(task);
     Ok(())
 }
@@ -837,13 +1075,13 @@ pub async fn lichess_challenge_decline(
     let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/challenge/{id}/decline");
-    let response = client
-        .post(&url)
-        .bearer_auth(&token)
-        .form(&[("reason", reason.as_wire())])
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(
+        client
+            .post(&url)
+            .bearer_auth(&token)
+            .form(&[("reason", reason.as_wire())]),
+    )
+    .await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -867,12 +1105,7 @@ pub async fn lichess_challenge_accept(
     let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/challenge/{id}/accept");
-    let response = client
-        .post(&url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(client.post(&url).bearer_auth(&token)).await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -902,12 +1135,12 @@ pub async fn lichess_bot_upgrade(
 ) -> Result<(), String> {
     let token = token(TokenSlot::Bot)?;
     let client = new_client()?;
-    let response = client
-        .post("https://lichess.org/api/bot/account/upgrade")
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(
+        client
+            .post("https://lichess.org/api/bot/account/upgrade")
+            .bearer_auth(&token),
+    )
+    .await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -980,19 +1213,19 @@ pub async fn lichess_challenge_bot(
     let (token, _) = token_for_slot_verified(TokenSlot::Bot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/challenge/{username}");
-    let response = client
-        .post(&url)
-        .bearer_auth(&token)
-        .form(&[
-            ("rated", "false"),
-            ("clock.limit", &clock_limit_seconds.to_string()),
-            ("clock.increment", &clock_increment_seconds.to_string()),
-            ("color", &color),
-            ("variant", "standard"),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(
+        client
+            .post(&url)
+            .bearer_auth(&token)
+            .form(&[
+                ("rated", "false"),
+                ("clock.limit", &clock_limit_seconds.to_string()),
+                ("clock.increment", &clock_increment_seconds.to_string()),
+                ("color", &color),
+                ("variant", "standard"),
+            ]),
+    )
+    .await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -1027,19 +1260,19 @@ pub async fn lichess_challenge_user(
     let url = format!("https://lichess.org/api/challenge/{username}");
     let clock_limit = (minutes * 60).to_string();
     let clock_increment = increment.to_string();
-    let response = client
-        .post(&url)
-        .bearer_auth(&token)
-        .form(&[
-            ("variant", "standard"),
-            ("rated", if rated { "true" } else { "false" }),
-            ("color", color.as_wire()),
-            ("clock.limit", clock_limit.as_str()),
-            ("clock.increment", clock_increment.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(
+        client
+            .post(&url)
+            .bearer_auth(&token)
+            .form(&[
+                ("variant", "standard"),
+                ("rated", if rated { "true" } else { "false" }),
+                ("color", color.as_wire()),
+                ("clock.limit", clock_limit.as_str()),
+                ("clock.increment", clock_increment.as_str()),
+            ]),
+    )
+    .await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -1071,19 +1304,19 @@ pub async fn lichess_challenge_ai(
     let level_str = level.to_string();
     let clock_limit = (minutes * 60).to_string();
     let clock_increment = increment.to_string();
-    let response = client
-        .post("https://lichess.org/api/challenge/ai")
-        .bearer_auth(&token)
-        .form(&[
-            ("variant", "standard"),
-            ("color", color.as_wire()),
-            ("level", level_str.as_str()),
-            ("clock.limit", clock_limit.as_str()),
-            ("clock.increment", clock_increment.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(
+        client
+            .post("https://lichess.org/api/challenge/ai")
+            .bearer_auth(&token)
+            .form(&[
+                ("variant", "standard"),
+                ("color", color.as_wire()),
+                ("level", level_str.as_str()),
+                ("clock.limit", clock_limit.as_str()),
+                ("clock.increment", clock_increment.as_str()),
+            ]),
+    )
+    .await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -1173,12 +1406,7 @@ async fn game_action_impl(
     let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/{kind}/game/{game_id}/{action}");
-    let response = client
-        .post(&url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let response = post_with_retry(client.post(&url).bearer_auth(&token)).await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -1672,6 +1900,87 @@ mod tests {
         assert!(validate_ai_level(0).is_err());
         assert!(validate_ai_level(9).is_err());
         assert!(validate_ai_level(u8::MAX).is_err());
+    }
+
+    #[test]
+    fn pop_lines_splits_completed_lines_and_leaves_partial_at_end() {
+        let mut buffer = Vec::from(&b"one\ntwo\nthree"[..]);
+        let lines = pop_lines(&mut buffer);
+        assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+        // "three" has no trailing newline -- stays in the buffer for the
+        // next chunk. This is the entire point of the byte-buffered
+        // shape (pre-PR-6 the previous chunk-decoded-then-split path
+        // would either have dropped it or produced garbage).
+        assert_eq!(buffer, b"three");
+    }
+
+    #[test]
+    fn pop_lines_handles_crlf_line_endings() {
+        let mut buffer = Vec::from(&b"first\r\nsecond\r\n"[..]);
+        assert_eq!(
+            pop_lines(&mut buffer),
+            vec!["first".to_string(), "second".to_string()]
+        );
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn pop_lines_skips_empty_lines_between_content() {
+        // Lichess's keep-alive newlines produce empty lines, which the
+        // frontend has no use for. Filter them here so `applyIncomingMoves`
+        // isn't handed a "" it would silently parse-null.
+        let mut buffer = Vec::from(&b"\n\ndata\n\n"[..]);
+        assert_eq!(pop_lines(&mut buffer), vec!["data".to_string()]);
+    }
+
+    #[test]
+    fn pop_lines_preserves_multi_byte_utf8_split_across_chunk_boundaries() {
+        // The single-char string "é" is 0xC3 0xA9 in UTF-8. Simulate a
+        // chunk boundary landing between the two bytes: after the first
+        // chunk, only 0xC3 has arrived (no complete line yet). After
+        // the second, the codepoint completes and the line pops out
+        // intact -- pre-PR-6, `from_utf8_lossy` would have written
+        // U+FFFD REPLACEMENT CHARACTER for the orphaned byte.
+        let mut buffer = Vec::from(&b"caf\xC3"[..]);
+        assert!(pop_lines(&mut buffer).is_empty());
+        buffer.extend_from_slice(b"\xA9\n");
+        let lines = pop_lines(&mut buffer);
+        assert_eq!(lines, vec!["café".to_string()]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn retry_schedule_grows_exponentially_and_caps_at_30_seconds() {
+        let mut s = RetrySchedule::new();
+        assert_eq!(s.next(), Duration::from_secs(1));
+        assert_eq!(s.next(), Duration::from_secs(2));
+        assert_eq!(s.next(), Duration::from_secs(4));
+        assert_eq!(s.next(), Duration::from_secs(8));
+        assert_eq!(s.next(), Duration::from_secs(16));
+        // 32 > 30, so it caps.
+        assert_eq!(s.next(), Duration::from_secs(30));
+        // Every subsequent call stays at 30.
+        assert_eq!(s.next(), Duration::from_secs(30));
+        assert_eq!(s.next(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn retry_schedule_reset_starts_over_from_1_second() {
+        let mut s = RetrySchedule::new();
+        for _ in 0..5 {
+            let _ = s.next();
+        }
+        s.reset();
+        assert_eq!(s.next(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn retry_schedule_does_not_overflow_on_many_attempts() {
+        let mut s = RetrySchedule::new();
+        for _ in 0..1000 {
+            let d = s.next();
+            assert!(d.as_secs() <= 30, "delay must stay bounded at cap");
+        }
     }
 
     #[test]
