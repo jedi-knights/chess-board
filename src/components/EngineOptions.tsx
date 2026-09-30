@@ -64,12 +64,20 @@ function OptionControl({ option, useEngine }: { option: UciOption; useEngine: En
  * these were previously invisible; every option line was silently ignored.
  */
 export function EngineOptions() {
-  // See AnalysisPanel's comment -- same "the" single-engine assumption.
-  const engineSide = useGameStore((s) => (s.controllers.w === "engine" ? "w" : "b"));
-  const useEngine = engineStoreForSide(engineSide);
+  // Only meaningful when some side is engine-controlled. In human-vs-Lichess
+  // and other engine-free modes, a fall-through default here rendered the
+  // *stopped* black engine's stale options; setOption on that store then
+  // called failEngine -> exitPlayMode, silently killing the live Lichess
+  // game. No engine controller -> nothing to render.
+  const controllers = useGameStore((s) => s.controllers);
+  const engineSide: "w" | "b" | null =
+    controllers.w === "engine" ? "w" : controllers.b === "engine" ? "b" : null;
+  // Hooks must be called unconditionally, so use whichever side (default "w"
+  // when neither is engine); the null check below discards the result.
+  const useEngine = engineStoreForSide(engineSide ?? "w");
   const options = useEngine((s) => s.options);
 
-  if (options.length === 0) {
+  if (engineSide === null || options.length === 0) {
     return null;
   }
 

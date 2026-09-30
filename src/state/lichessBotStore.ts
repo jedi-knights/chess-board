@@ -127,6 +127,13 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
 
   if (isTerminalStatus(update.status)) {
     logDebug(`game over: ${update.status}`);
+    // Ask the engine to stop searching if it's mid-move -- the engine's
+    // resulting `bestmove` is then dropped by applyEngineBestMove's late-
+    // bestmove guard. Without this, the engine keeps its search context
+    // for the next game and (worse) the incoming bestmove would have been
+    // applied to the board and attempted-POST to a closed Lichess stream.
+    const engineSide = useGameStore.getState().controllers.w === "engine" ? "w" : "b";
+    engineStoreForSide(engineSide).getState().stopSearch();
     useLichessBotStore.setState({ status: "listening", activeGameId: null });
     useGameStore.getState().exitPlayMode();
     invoke("lichess_stop_game").catch(() => {});

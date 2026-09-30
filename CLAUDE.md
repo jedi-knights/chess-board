@@ -177,6 +177,43 @@ this file and the human-facing docs.
   `lichessBotStore.ts`'s `maybeSendEngineMove`) lives entirely in those stores, each
   subscribed to `gameStore`; the dependency only ever points one way, and every one of
   them independently derives "is it my move" from `gameStore.controllers`.
+- **`attemptMove` always validates against the live end (`plies.length`), never the
+  currently-viewed ply.** Only the *view* respects the reviewer's position: if the user
+  was already at the end, `ply` advances with the new ply; if they were reviewing an
+  earlier position, `ply` stays put while the game keeps progressing behind them. Before
+  this, validating against `fenAtPly(plies, state.ply)` would reject an incoming
+  Lichess/engine move as "illegal" the moment the user stepped back to review — the game
+  would then wedge on a stale error. Do not "simplify" `attemptMove` back into a single
+  `fenAtPly(plies, state.ply)` call.
+- **Loading a different game (paste PGN, Open PGN file, Load from Lichess) is disabled
+  while any engine or Lichess session is live.** `GameLoader` reads all four stores'
+  statuses and disables its own inputs; the game-mode menu (`useViewMenu`) is locked in
+  the same conditions. "Live" here means `engine.status ∈ {starting, ready, thinking}`,
+  `lichessStore.status ∈ {connecting, connected}`, or
+  `lichessBotStore.status ∈ {listening, playing}`. Mid-session `loadGame([...])` would
+  clobber `plies` while a still-connected Lichess stream keeps appending on top, exactly
+  the desync `movesToApply` was designed around; disabling both surfaces prevents that
+  entry vector. Do not gate on `mode === "play"` alone — that misses an engine
+  "ready"/"starting" between two engine-vs-engine games, a bot "listening" for its next
+  challenge, and a human seek waiting on an opponent.
+- **`EngineOptions` and `AnalysisPanel` render only when some side is engine-controlled,
+  and they read that side's store.** Previously they defaulted to the black engine store
+  in every mode; in human-vs-Lichess (no engine at all), the panel showed the *stopped*
+  black engine's stale options, and clicking one called `setOption` → `failEngine` →
+  `exitPlayMode`, silently killing the live Lichess game. The gate is `controllers.w`/
+  `controllers.b` === `"engine"`; when neither is, both components return `null`.
+- **Late bestmoves are dropped, not applied.** After a game ends (Lichess terminal status
+  arrives, a human's move delivers checkmate on-board, the user disconnects) an engine
+  that was mid-search will still emit a `bestmove` — `engineStore.applyEngineBestMove`
+  checks `gameStore.mode`, `sideToMove(liveFen)`, and `gameStatus(liveFen).over` and
+  drops the move rather than appending it (which would rewrite the board past a finished
+  game) or POSTing it (which would target a closed Lichess stream). To help the engine
+  return to `ready` promptly instead of sitting on its search context, both Lichess
+  stores' terminal-status paths call `engineStoreForSide(engineSide).stopSearch()` —
+  sending UCI `stop` if and only if the engine is currently thinking, so the guarded
+  bestmove arrives sooner. Do not remove either half of this pair; without `stopSearch`
+  the engine holds its search and blocks the next game; without the guard the eventual
+  bestmove lands on the wrong game.
 - **Starting a new game resets `gameStore` *before* confirming the engine/connection is
   ready, never after.** Every mode's start flow (`EngineControls.start()`,
   `LichessControls.connect()`, `lichessBotStore`'s `handleGameStart`,

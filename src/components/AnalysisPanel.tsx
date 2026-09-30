@@ -15,13 +15,14 @@ function formatScore(depth: number | undefined, scoreCp?: number, scoreMate?: nu
  * isn't enough to see how a search actually converged while debugging.
  */
 export function AnalysisPanel() {
-  // "The" engine, for this single-engine-at-a-time panel, is whichever
-  // side controllers currently marks "engine" -- true for every mode this
-  // panel is shown in today (human vs. engine, engine vs. Lichess).
-  const engineSide = useGameStore((s) => (s.controllers.w === "engine" ? "w" : "b"));
-  const history = engineStoreForSide(engineSide)((s) => s.searchInfoHistory);
+  // Same gate as EngineOptions: when no side is engine-controlled, a
+  // fall-through default read the wrong (stopped) engine's history.
+  const controllers = useGameStore((s) => s.controllers);
+  const engineSide: "w" | "b" | null =
+    controllers.w === "engine" ? "w" : controllers.b === "engine" ? "b" : null;
+  const history = engineStoreForSide(engineSide ?? "w")((s) => s.searchInfoHistory);
 
-  if (history.length === 0) {
+  if (engineSide === null || history.length === 0) {
     return null;
   }
 
