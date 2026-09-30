@@ -72,6 +72,15 @@ const NOT_RUNNING = new Set<EngineStatus>(["idle", "error", "crashed"]);
  */
 export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStoreState>> {
   let listenersInstalled = false;
+  // Set just before an intentional `engine_stop` call and consumed by the
+  // engine-exit listener below. Rust's stop_locked() kills the process and
+  // joins its stdout-reader thread -- which emits engine-exit-{side} on EOF
+  // -- before the engine_stop command returns, but Tauri does not order
+  // event delivery against the invoke() promise that races it: the event
+  // can reach this store either before or after stopEngine's own `finally`
+  // sets status "idle". Without this latch, a clean, user-requested Stop
+  // could have its "idle" silently overwritten by "crashed" a moment later.
+  let stopRequested = false;
 
   /** Fire-and-forget append to the on-disk debug log -- a logging failure
    * must never cascade into a user-visible error of its own. */
@@ -180,6 +189,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
     });
 
     void listen<EngineExitPayload>(`engine-exit-${side}`, (event) => {
+      if (stopRequested) {
+        // Expected -- this is the exit our own stopEngine() caused.
+        stopRequested = false;
+        return;
+      }
       failEngine("crashed", formatEngineExitMessage(event.payload));
     });
 
@@ -221,6 +235,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
           // and surfaces as a spurious "engine process exited unexpectedly".
           if (!NOT_RUNNING.has(get().status)) return;
 
+          // A stray, delayed engine-exit event tied to a *previous* stop
+          // (e.g. one that was a no-op because nothing was running, so the
+          // listener above never got to consume the latch) must never
+          // suppress a crash report for this fresh engine lifecycle.
+          stopRequested = false;
           installListenersOnce();
           // A fresh debug log per game, per the mandate that it must never
           // grow unbounded across a long session -- app launch clears it too
@@ -260,6 +279,9 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
 
         stopEngine: async () => {
           logDebug("stop requested");
+          // See the `stopRequested` declaration above for why this latch
+          // exists -- it must be set before the invoke, not after.
+          stopRequested = true;
           try {
             await invoke("engine_stop", { side });
           } finally {
