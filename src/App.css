@@ -62,11 +62,6 @@ body {
   font-size: 1.2em;
 }
 
-.app-header-controls {
-  display: flex;
-  gap: 0.5em;
-}
-
 .app-body {
   flex: 1;
   display: flex;
@@ -148,21 +143,6 @@ body {
 
 .engine-vs-engine-slot h3 {
   margin: 0;
-  font-size: 0.9em;
-}
-
-.game-mode-select {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3em;
-  padding-bottom: 1em;
-  border-bottom: 1px solid var(--border);
-}
-
-.game-mode-option {
-  display: flex;
-  align-items: center;
-  gap: 0.4em;
   font-size: 0.9em;
 }
 
