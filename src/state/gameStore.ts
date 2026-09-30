@@ -57,6 +57,12 @@ interface GameState {
   /** Validates and applies a move; returns whether it succeeded. Used for
    * both a human's click-to-move and an engine's `bestmove`. */
   attemptMove: (from: string, to: string, promotion?: string) => boolean;
+  /** Attaches derived timing metadata to the most recently appended ply.
+   * The Lichess stores call this right after `attemptMove` returns true,
+   * so `thinkTimeSeconds` shows up in the move log for live plies without
+   * having to rebuild the entire ply array from clock deltas. A no-op
+   * when there are no plies yet. */
+  annotateLastPly: (info: { thinkTimeSeconds?: number; clockSeconds?: number }) => void;
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -183,5 +189,18 @@ export const useGameStore = create<GameState>((set, get) => ({
       legalDestinationSquares: [],
     });
     return true;
+  },
+
+  annotateLastPly: (info) => {
+    const state = get();
+    if (state.plies.length === 0) return;
+    const lastIndex = state.plies.length - 1;
+    const last = state.plies[lastIndex];
+    const patched: (typeof last) = { ...last };
+    if (info.thinkTimeSeconds !== undefined) patched.thinkTimeSeconds = info.thinkTimeSeconds;
+    if (info.clockSeconds !== undefined) patched.clockSeconds = info.clockSeconds;
+    const nextPlies = state.plies.slice();
+    nextPlies[lastIndex] = patched;
+    set({ plies: nextPlies });
   },
 }));

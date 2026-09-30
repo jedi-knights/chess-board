@@ -9,6 +9,14 @@ export interface LichessMoveUpdate {
   moves: string[];
   /** Lichess's own game-status string, e.g. "started", "mate", "resign". */
   status: string;
+  /** White's remaining time in ms at the moment of this update, if present.
+   * Absent on non-clocked games (correspondence, unlimited). */
+  wtimeMs: number | null;
+  btimeMs: number | null;
+  /** Increment in ms per move -- fixed for the game, but Lichess reports it
+   * on every state update anyway. Absent when there is no increment. */
+  wincMs: number | null;
+  bincMs: number | null;
 }
 
 /**
@@ -33,12 +41,24 @@ export function isTerminalStatus(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
+function readOptionalNumber(obj: Record<string, unknown>, key: string): number | null {
+  const value = obj[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | null {
   const movesField = state.moves;
   const status = state.status;
   if (typeof movesField !== "string" || typeof status !== "string") return null;
   const trimmed = movesField.trim();
-  return { moves: trimmed.length > 0 ? trimmed.split(/\s+/) : [], status };
+  return {
+    moves: trimmed.length > 0 ? trimmed.split(/\s+/) : [],
+    status,
+    wtimeMs: readOptionalNumber(state, "wtime"),
+    btimeMs: readOptionalNumber(state, "btime"),
+    wincMs: readOptionalNumber(state, "winc"),
+    bincMs: readOptionalNumber(state, "binc"),
+  };
 }
 
 /**

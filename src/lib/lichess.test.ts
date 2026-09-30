@@ -10,26 +10,60 @@ import {
 } from "./lichess";
 
 describe("parseLichessLine", () => {
-  it("parses a gameFull line via its nested state", () => {
+  it("parses a gameFull line via its nested state and surfaces clock fields", () => {
     const line = JSON.stringify({
       type: "gameFull",
       id: "abcd1234",
-      state: { type: "gameState", moves: "e2e4 e7e5", status: "started" },
+      state: {
+        type: "gameState",
+        moves: "e2e4 e7e5",
+        status: "started",
+        wtime: 60000,
+        btime: 58000,
+        winc: 2000,
+        binc: 2000,
+      },
     });
-    expect(parseLichessLine(line)).toEqual({ moves: ["e2e4", "e7e5"], status: "started" });
+    expect(parseLichessLine(line)).toEqual({
+      moves: ["e2e4", "e7e5"],
+      status: "started",
+      wtimeMs: 60000,
+      btimeMs: 58000,
+      wincMs: 2000,
+      bincMs: 2000,
+    });
   });
 
-  it("parses a gameState line", () => {
-    const line = JSON.stringify({ type: "gameState", moves: "e2e4 e7e5 g1f3", status: "started" });
+  it("parses a gameState line and surfaces clock fields", () => {
+    const line = JSON.stringify({
+      type: "gameState",
+      moves: "e2e4 e7e5 g1f3",
+      status: "started",
+      wtime: 57123,
+      btime: 55432,
+      winc: 3000,
+      binc: 3000,
+    });
     expect(parseLichessLine(line)).toEqual({
       moves: ["e2e4", "e7e5", "g1f3"],
       status: "started",
+      wtimeMs: 57123,
+      btimeMs: 55432,
+      wincMs: 3000,
+      bincMs: 3000,
     });
   });
 
-  it("parses an empty move list as the start of a game", () => {
+  it("returns null clock fields when the game has no clock (correspondence/unlimited)", () => {
     const line = JSON.stringify({ type: "gameState", moves: "", status: "started" });
-    expect(parseLichessLine(line)).toEqual({ moves: [], status: "started" });
+    expect(parseLichessLine(line)).toEqual({
+      moves: [],
+      status: "started",
+      wtimeMs: null,
+      btimeMs: null,
+      wincMs: null,
+      bincMs: null,
+    });
   });
 
   it("returns null for a chatLine event", () => {

@@ -411,6 +411,38 @@ body {
   color: var(--border);
 }
 
+.live-game-clocks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  padding: 0.5em;
+  margin-bottom: 0.75em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.live-game-clocks .clock {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.2em 0.5em;
+  font-family: monospace;
+  opacity: 0.6;
+}
+
+.live-game-clocks .clock.active {
+  opacity: 1;
+  font-weight: bold;
+}
+
+.live-game-clocks .clock-side {
+  font-size: 0.9em;
+}
+
+.live-game-clocks .clock-time {
+  font-size: 1.2em;
+}
+
 .move-log-entries {
   list-style: none;
   margin: 0;

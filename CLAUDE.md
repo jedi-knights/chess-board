@@ -216,6 +216,40 @@ this file and the human-facing docs.
   discrete follow-up (proposed in the PR-1 planning message and left explicitly out
   of scope). When it lands, the decideChallenge branch relaxes; until then, refusing
   is safer than accepting a challenge we can't actually play correctly.
+- **Bot mode drives the engine with server clocks + lag margin; movetime is a *cap*, not
+  the whole budget.** `handleGameStart` installs a `goBuilder` on the bot's side engine
+  store (`engineStore.setGoBuilder`) that reads live `serverClocks` on every request and
+  emits `go wtime .. btime .. winc .. binc .. movetime ..`. Only the bot's own clock is
+  adjusted (subtracting elapsed-since-server-update + `lagMarginMs`); the opponent's
+  clock is left at what Lichess reported, because while the bot is thinking the
+  opponent's clock isn't ticking. `lagMarginMs` (persisted, default 100 ms) is headroom
+  for this app's own IPC + HTTP latency on the return trip. `movetimeMs` is always
+  included as an upper cap so a runaway allocation on bullet games can't burn the
+  clock. Human-vs-engine and engine-vs-engine leave `goBuilder` unset and use the
+  default `{ movetimeMs }` path unchanged. Do not remove either half: without the
+  builder the engine plays a fixed movetime and time-forfeits itself; without the cap
+  the engine's own allocation can misbehave.
+- **`ucinewgame` between bot games; full stop-and-start when the engine binary changes.**
+  `handleGameStart` inspects the target-side engine store: if `status === "ready"` and
+  `path === bot.enginePath`, it reuses the running process via `newGame()` (which
+  sends `ucinewgame` + `isready` and clears per-search state). If the path differs,
+  it stops the current engine and starts the new one. Reuse is materially faster on
+  real engines (opening book / hash-table warmup) and avoids the "startEngine no-ops
+  on status=ready" trap in CLAUDE.md's other design decisions. Do not "simplify" back
+  to unconditional stop-then-start.
+- **Server clocks commit to the Lichess store *before* the move loop runs, not after.**
+  `attemptMove` fires `gameStore.subscribe` synchronously, and the engine store's
+  subscriber reads `serverClocks` inside `buildBotGoOptions` to build the `go` line.
+  If clocks were updated after, every second-and-subsequent `go` on the same update
+  would see the *previous* update's stale values, and in bullet games that consistently
+  over-allocates. The per-ply think-time annotation still uses the *captured* pre-update
+  snapshot -- both invariants hold together (fresh clocks for the engine, correct
+  diff for the move log).
+- **`gameStore.annotateLastPly` populates `thinkTimeSeconds` on live plies now.** Called
+  from both Lichess stores immediately after `attemptMove` returns true, using the
+  captured pre-update clock snapshot. Multi-move catch-ups on reconnect and no-clock
+  games (correspondence, unlimited) leave the ply un-annotated -- MoveLog shows "—"
+  in those cases, honestly, rather than fabricating a value.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via
@@ -336,6 +370,13 @@ this file and the human-facing docs.
   (one active game stream at a time), and supporting multiple would mean a
   per-game map plus a routing layer inside `pump_ndjson_stream`. `decideChallenge`
   returns `decline("later")` if `activeGameId` is set. See design decision above.
+
+## Editor/toolchain notes
+
+- **`tsconfig.json` targets ES2022** (both `target` and `lib`). Bumped from ES2020 in PR 3
+  so `Array.prototype.at` and other now-standard idioms typecheck. The Tauri webview
+  (Chromium / WebView2 / webkit2gtk 4.1+ / WKWebView on macOS) and Node 22+ all support
+  ES2022 natively; Vite's own build target is separate and unchanged.
 
 ## Testing conventions
 

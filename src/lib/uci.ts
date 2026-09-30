@@ -163,9 +163,44 @@ export function buildPositionCommand(moves: string[]): string {
     : `position startpos moves ${moves.join(" ")}`;
 }
 
-/** `1000` -> `"go movetime 1000"`. */
-export function buildGoCommand(movetimeMs: number): string {
-  return `go movetime ${movetimeMs}`;
+/** Every field a UCI `go` line can carry today for this app. All values in
+ * milliseconds. The bot Lichess flow supplies clock fields; human-vs-engine
+ * and engine-vs-engine only supply `movetimeMs`.
+ *
+ * `movetimeMs` in a clock-driven request acts as a *cap* on the engine's
+ * think time -- most engines honor `wtime`/`btime`-based allocation up to
+ * this ceiling and no further. That's the reasoning behind bot mode
+ * always including it: a runaway allocation on a fast time control
+ * shouldn't be able to burn the clock. */
+export interface GoOptions {
+  movetimeMs?: number;
+  wtimeMs?: number;
+  btimeMs?: number;
+  wincMs?: number;
+  bincMs?: number;
+}
+
+/**
+ * Builds a UCI `go` line from any combination of movetime / clock / increment
+ * fields. Order (`wtime btime winc binc movetime`) is stable so the produced
+ * string is comparable in tests and readable in the debug log; engines don't
+ * care about token order.
+ *
+ * Rejects the empty case rather than silently emitting bare `"go"` -- an
+ * engine sent bare `go` will search until it decides on its own (or, worse,
+ * until told to stop), which is never what any caller here actually wants.
+ */
+export function buildGoCommand(opts: GoOptions): string {
+  const parts: string[] = [];
+  if (opts.wtimeMs !== undefined) parts.push(`wtime ${opts.wtimeMs}`);
+  if (opts.btimeMs !== undefined) parts.push(`btime ${opts.btimeMs}`);
+  if (opts.wincMs !== undefined) parts.push(`winc ${opts.wincMs}`);
+  if (opts.bincMs !== undefined) parts.push(`binc ${opts.bincMs}`);
+  if (opts.movetimeMs !== undefined) parts.push(`movetime ${opts.movetimeMs}`);
+  if (parts.length === 0) {
+    throw new Error("buildGoCommand needs at least one of movetime/wtime/btime/winc/binc");
+  }
+  return `go ${parts.join(" ")}`;
 }
 
 /**

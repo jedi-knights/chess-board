@@ -6,6 +6,7 @@ import {
   isTerminalStatus,
   parseLichessLine,
   type LichessAccountInfo,
+  type LichessMoveUpdate,
 } from "../lib/lichess";
 import { useGameStore } from "./gameStore";
 
@@ -14,6 +15,18 @@ import { useGameStore } from "./gameStore";
  * This module always uses `human` -- see `TokenSlot`'s doc comment in
  * `src-tauri/src/lichess.rs` for why the slot is a first-class enum. */
 const HUMAN_SLOT = "human" as const;
+
+/** Server-reported clock snapshot for the live-clock display. Populated
+ * by every `gameState` update; `LiveGameClocks` interpolates locally
+ * between updates using `updatedAtMs`. Shared shape with lichessBotStore. */
+export interface LiveClocks {
+  wtimeMs: number;
+  btimeMs: number;
+  wincMs: number;
+  bincMs: number;
+  /** `Date.now()` at the moment the server-side clocks were received. */
+  updatedAtMs: number;
+}
 
 export type LichessStatus = "idle" | "connecting" | "connected" | "error" | "gameOver";
 
@@ -64,6 +77,9 @@ interface LichessStoreState {
   status: LichessStatus;
   errorMessage: string | null;
   lastSentUci: string | null;
+  /** Most recent server clock snapshot for the live game. `null` until
+   * the first `gameFull`/`gameState` with clock fields arrives. */
+  serverClocks: LiveClocks | null;
 
   refreshHasToken: () => Promise<void>;
   setToken: (token: string) => Promise<void>;
@@ -91,8 +107,63 @@ function failLichess(message: string) {
   useGameStore.getState().exitPlayMode();
 }
 
+/** Snapshots the update's clock fields into the store *before* the
+ * moves in the same update are applied. attemptMove fires a synchronous
+ * gameStore.subscribe callback in engineStore that may build a `go`
+ * line reading `serverClocks`; updating after would cause every
+ * such request to see the previous update's stale values. Returns the
+ * previous snapshot so the caller can compute think-times against it. */
+function commitServerClocksEarly(update: LichessMoveUpdate) {
+  const prev = useLichessStore.getState().serverClocks;
+  if (update.wtimeMs !== null && update.btimeMs !== null) {
+    useLichessStore.setState({
+      serverClocks: {
+        wtimeMs: update.wtimeMs,
+        btimeMs: update.btimeMs,
+        wincMs: update.wincMs ?? 0,
+        bincMs: update.bincMs ?? 0,
+        updatedAtMs: Date.now(),
+      },
+    });
+  }
+  return prev;
+}
+
+/** Populates `thinkTimeSeconds` on the last-appended live ply using the
+ * captured pre-update clocks. Only annotates when exactly one new ply
+ * was applied and the game has clock fields at all -- multi-move
+ * catch-ups on reconnect can't attribute per-move think-times correctly,
+ * and correspondence games have no wtime/btime. Both are honest
+ * `undefined`s in the move log, not fabrications. */
+function annotateLastPlyThinkTime(
+  prev: LiveClocks | null,
+  update: LichessMoveUpdate,
+  appliedCount: number,
+) {
+  if (appliedCount !== 1 || !prev) return;
+  const lastPly = useGameStore.getState().plies.at(-1);
+  if (!lastPly) return;
+  const color = lastPly.color;
+  const prevTimeMs = color === "w" ? prev.wtimeMs : prev.btimeMs;
+  const newTimeMs = color === "w" ? update.wtimeMs : update.btimeMs;
+  const incMs = color === "w" ? prev.wincMs : prev.bincMs;
+  if (newTimeMs === null) return;
+  const thinkTimeSeconds = Math.max(0, (prevTimeMs + incMs - newTimeMs) / 1000);
+  useGameStore.getState().annotateLastPly({
+    thinkTimeSeconds,
+    clockSeconds: newTimeMs / 1000,
+  });
+}
+
 function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   if (!update) return;
+  // Update serverClocks *before* the move loop -- see the identical
+  // note in lichessBotStore.ts. Human mode doesn't have a local engine
+  // reading these clocks today, but the ordering is still correct: any
+  // future subscriber (a live-clock component that re-renders on each
+  // update) would otherwise briefly see the previous update's values.
+  const prevClocks = commitServerClocksEarly(update);
+
   const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);
   for (const uci of newMoves) {
     const from = uci.slice(0, 2);
@@ -104,6 +175,8 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
       return;
     }
   }
+
+  annotateLastPlyThinkTime(prevClocks, update, newMoves.length);
 
   if (isTerminalStatus(update.status)) {
     logDebug(`game over: ${update.status}`);
@@ -167,6 +240,7 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
   status: "idle",
   errorMessage: null,
   lastSentUci: null,
+  serverClocks: null,
 
   refreshHasToken: async () => {
     const hasToken = await invoke<boolean>("lichess_token_has", { slot: HUMAN_SLOT }).catch(
@@ -227,6 +301,7 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
       errorMessage: null,
       lastSentUci: null,
       gameId: gameIdOrUrl,
+      serverClocks: null,
     });
     logDebug(`connecting: ${gameIdOrUrl}`);
     try {
@@ -247,7 +322,7 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
     try {
       await invoke("lichess_stop_game");
     } finally {
-      set({ status: "idle", errorMessage: null, gameId: null });
+      set({ status: "idle", errorMessage: null, gameId: null, serverClocks: null });
       useGameStore.getState().exitPlayMode();
     }
   },

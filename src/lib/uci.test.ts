@@ -161,8 +161,41 @@ describe("buildPositionCommand", () => {
 });
 
 describe("buildGoCommand", () => {
-  it("builds a movetime command", () => {
-    expect(buildGoCommand(1000)).toBe("go movetime 1000");
+  it("builds a movetime-only command", () => {
+    expect(buildGoCommand({ movetimeMs: 1000 })).toBe("go movetime 1000");
+  });
+
+  it("builds a clock-only command with wtime/btime/winc/binc in a stable order", () => {
+    // Order in the output matters for readable debug logs and comparable
+    // tests -- fixed at wtime -> btime -> winc -> binc -> movetime.
+    expect(
+      buildGoCommand({ wtimeMs: 60000, btimeMs: 58000, wincMs: 2000, bincMs: 2000 }),
+    ).toBe("go wtime 60000 btime 58000 winc 2000 binc 2000");
+  });
+
+  it("builds a clock command with movetime included as a cap", () => {
+    // Bot mode's go: engine allocates on clock but never exceeds movetime.
+    expect(
+      buildGoCommand({
+        wtimeMs: 60000,
+        btimeMs: 58000,
+        wincMs: 2000,
+        bincMs: 2000,
+        movetimeMs: 5000,
+      }),
+    ).toBe("go wtime 60000 btime 58000 winc 2000 binc 2000 movetime 5000");
+  });
+
+  it("omits fields that are undefined rather than emitting `undefined`", () => {
+    expect(buildGoCommand({ wtimeMs: 60000, btimeMs: 58000 })).toBe(
+      "go wtime 60000 btime 58000",
+    );
+  });
+
+  it("rejects an empty options object rather than emitting bare `go`", () => {
+    // A bare `go` makes the engine think until told otherwise -- never
+    // what any caller here wants; failing loudly is safer.
+    expect(() => buildGoCommand({})).toThrow(/at least one/);
   });
 });
 
