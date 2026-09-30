@@ -165,13 +165,20 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   attemptMove: (from, to, promotion) => {
     const state = get();
-    const fen = fenAtPly(state.plies, state.ply);
-    const ply = tryMove(fen, from, to, promotion);
+    // Always validate against the live end of the game, never `state.ply` --
+    // an incoming Lichess/engine move must apply while the user is reviewing
+    // an earlier position, and validating against the viewed FEN would
+    // reject it as illegal (or worse, apply the wrong replacement). Only
+    // advance the view if the user was already at the end; otherwise leave
+    // them where they were reviewing.
+    const liveFen = fenAtPly(state.plies, state.plies.length);
+    const ply = tryMove(liveFen, from, to, promotion);
     if (!ply) return false;
 
+    const wasAtEnd = state.ply === state.plies.length;
     set({
       plies: [...state.plies, ply],
-      ply: state.ply + 1,
+      ply: wasAtEnd ? state.plies.length + 1 : state.ply,
       selectedSquare: null,
       legalDestinationSquares: [],
     });

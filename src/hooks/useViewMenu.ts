@@ -2,10 +2,26 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useBoardThemeStore } from "../state/boardThemeStore";
+import {
+  useBlackEngineStore,
+  useWhiteEngineStore,
+  type EngineStatus,
+} from "../state/engineStore";
 import { useGameModeStore } from "../state/gameModeStore";
 import { useGameStore } from "../state/gameStore";
+import { useLichessBotStore, type LichessBotStatus } from "../state/lichessBotStore";
+import { useLichessStore, type LichessStatus } from "../state/lichessStore";
 import { usePieceStyleStore } from "../state/pieceStyleStore";
 import { useThemeStore } from "../state/themeStore";
+
+// Locking on `mode === "play"` alone missed three real cases: an engine
+// "starting"/"ready" between games in engine-vs-engine, a Lichess bot
+// account "listening" for its next challenge, and a human seek waiting on
+// an opponent -- all are live-session states where switching modes would
+// silently drop a running task on the floor.
+const LIVE_ENGINE: Set<EngineStatus> = new Set(["starting", "ready", "thinking"]);
+const LIVE_LICHESS: Set<LichessStatus> = new Set(["connecting", "connected"]);
+const LIVE_LICHESS_BOT: Set<LichessBotStatus> = new Set(["listening", "playing"]);
 
 /** Every native View-menu item id (see src-tauri/src/menu.rs's own
  * `GROUPS`) mapped to the store action it triggers. The menu is the only
@@ -45,13 +61,22 @@ const ACTIONS: Record<string, () => void> = {
  *    cleanup -- unlike `engineStore.ts`'s original `listen()` calls
  *    (see that module's own fix), a leaked listener here would double-
  *    dispatch a single click across dev HMR reloads.
- * 3. Keeps the game-mode group's enabled state in sync with
- *    `gameStore.mode` -- switching modes mid-game would hide the panel
- *    controlling whatever's actually running, same reasoning the old
- *    sidebar selector's `disabled` prop had.
+ * 3. Keeps the game-mode group's enabled state in sync with whether any
+ *    live session is running -- engine starting/ready/thinking, Lichess
+ *    connecting/connected, or Lichess bot listening/playing. Switching
+ *    modes while any of these are live would silently drop the running
+ *    task (an engine mid-search, a challenge stream, a pending seek).
  */
 export function useViewMenu() {
-  const mode = useGameStore((s) => s.mode);
+  const wStatus = useWhiteEngineStore((s) => s.status);
+  const bStatus = useBlackEngineStore((s) => s.status);
+  const lichessStatus = useLichessStore((s) => s.status);
+  const lichessBotStatus = useLichessBotStore((s) => s.status);
+  const anyLive =
+    LIVE_ENGINE.has(wStatus) ||
+    LIVE_ENGINE.has(bStatus) ||
+    LIVE_LICHESS.has(lichessStatus) ||
+    LIVE_LICHESS_BOT.has(lichessBotStatus);
 
   useEffect(() => {
     void invoke("sync_view_menu", {
@@ -70,6 +95,6 @@ export function useViewMenu() {
   }, []);
 
   useEffect(() => {
-    void invoke("set_game_mode_menu_enabled", { enabled: mode !== "play" });
-  }, [mode]);
+    void invoke("set_game_mode_menu_enabled", { enabled: !anyLive });
+  }, [anyLive]);
 }

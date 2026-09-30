@@ -58,6 +58,12 @@ export interface EngineStoreState {
    * right after `enterPlayMode()` -- see `startEngine`'s doc comment for why
    * that can't happen automatically inside this store anymore. */
   checkTurn: () => void;
+  /** Sends UCI `stop` if this engine is currently thinking. Used when a
+   * game ends mid-search (Lichess terminal status, opponent resign)
+   * so the engine returns to `ready` for the next game instead of holding
+   * its search context indefinitely. The forthcoming `bestmove` is dropped
+   * by `applyEngineBestMove`'s late-bestmove guard. */
+  stopSearch: () => void;
 }
 
 const NOT_RUNNING = new Set<EngineStatus>(["idle", "error", "crashed"]);
@@ -113,10 +119,27 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
     // Silently ignoring an exact repeat of the last ply is correct
     // regardless of *why* it arrived twice -- tanking the whole game over
     // a harmless duplicate would be worse than a missing defensive check.
-    const plies = useGameStore.getState().plies;
+    const gameState = useGameStore.getState();
+    const plies = gameState.plies;
     const lastPly = plies[plies.length - 1];
     if (lastPly?.uci === move) {
       logDebug(`ignoring duplicate bestmove: ${move}`);
+      return;
+    }
+    // Drop late bestmoves: the game may have ended (Lichess terminal status,
+    // manual Stop, or an on-board checkmate the engine wasn't yet aware of)
+    // between the `go` and this reply, or an opponent's move may already have
+    // been applied via a different path (Lichess echo). Applying this move
+    // would rewrite the board past a finished game, and in Lichess-bot mode
+    // would try to POST it to a stream that's already closed.
+    const liveFen = fenAtPly(plies, plies.length);
+    if (
+      gameState.mode !== "play" ||
+      sideToMove(liveFen) !== side ||
+      gameStatus(liveFen).over
+    ) {
+      logDebug(`dropping late bestmove: ${move}`);
+      useEngineStore.setState({ status: "ready" });
       return;
     }
     const from = move.slice(0, 2);
@@ -319,6 +342,12 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
         },
 
         checkTurn: () => maybeRequestEngineMove(),
+
+        stopSearch: () => {
+          if (useEngineStore.getState().status !== "thinking") return;
+          logDebug("stop search requested");
+          invoke("engine_write_line", { side, line: "stop" }).catch(() => {});
+        },
       }),
       {
         name: `chess-board-engine-${side}`,

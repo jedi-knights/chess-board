@@ -220,4 +220,49 @@ describe("attemptMove", () => {
     expect(state.plies[1].san).toBe("e8=Q");
     expect(state.plies[1].uci).toBe("e7e8q");
   });
+
+  it("applies incoming moves against the live end while the user reviews an earlier ply", () => {
+    // Simulate a live game where a few moves have been played.
+    useGameStore.getState().attemptMove("e2", "e4");
+    useGameStore.getState().attemptMove("e7", "e5");
+    useGameStore.getState().attemptMove("g1", "f3");
+    // User steps back to review move 1 (ply=1); the live end is 3.
+    useGameStore.getState().goToPly(1);
+    expect(useGameStore.getState().ply).toBe(1);
+
+    // A Lichess/engine move for black arrives while the user is reviewing.
+    // It must apply on top of ply 3, not be rejected as "not black's turn
+    // at ply 1" (which is exactly the pre-fix bug).
+    const applied = useGameStore.getState().attemptMove("b8", "c6");
+    expect(applied).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.plies).toHaveLength(4);
+    expect(state.plies[3].uci).toBe("b8c6");
+    // The viewer stays put where they were reviewing.
+    expect(state.ply).toBe(1);
+  });
+
+  it("advances the view when a new move arrives and the user was at the live end", () => {
+    useGameStore.getState().attemptMove("e2", "e4");
+    expect(useGameStore.getState().ply).toBe(1);
+    // Still at end.
+    const applied = useGameStore.getState().attemptMove("e7", "e5");
+    expect(applied).toBe(true);
+    expect(useGameStore.getState().ply).toBe(2);
+  });
+
+  it("rejects an incoming move that is illegal against the live end", () => {
+    useGameStore.getState().attemptMove("e2", "e4");
+    useGameStore.getState().attemptMove("e7", "e5");
+    // Step back and try a move that would be legal at ply 0 but not at ply 2.
+    useGameStore.getState().goToPly(0);
+    // e2-e4 is legal at ply 0 but not at ply 2 (white pawn is on e4, and
+    // it's white's turn again after two plies -- so e2-e4 is illegal since
+    // there's no white pawn on e2 anymore).
+    const applied = useGameStore.getState().attemptMove("e2", "e4");
+    expect(applied).toBe(false);
+    expect(useGameStore.getState().plies).toHaveLength(2);
+    expect(useGameStore.getState().ply).toBe(0);
+  });
 });

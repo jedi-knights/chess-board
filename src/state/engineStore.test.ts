@@ -334,3 +334,61 @@ describe("checkTurn / maybeRequestEngineMove", () => {
     });
   });
 });
+
+describe("late-bestmove guard", () => {
+  it("drops a bestmove that arrives after the game left play mode", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    useGameStore.getState().enterPlayMode();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    useWhiteEngineStore.setState({ status: "thinking" });
+
+    // Simulate a Lichess terminal status arriving mid-search: mode flips
+    // back to "replay" while the engine is still thinking.
+    useGameStore.getState().exitPlayMode();
+
+    emit("engine-stdout-w", "bestmove e2e4");
+
+    // Board untouched, engine back to ready (no illegal-move failEngine).
+    expect(useGameStore.getState().plies).toEqual([]);
+    expect(useWhiteEngineStore.getState().status).toBe("ready");
+    expect(useWhiteEngineStore.getState().errorMessage).toBeNull();
+  });
+
+  it("drops a bestmove when the opponent's move has already been applied", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    useGameStore.getState().enterPlayMode();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    useWhiteEngineStore.setState({ status: "thinking" });
+
+    // The human's move lands before the engine's bestmove -- now the side
+    // to move is black, but this white-engine bestmove is for the old
+    // white-to-move position and no longer matches the live turn.
+    useGameStore.getState().attemptMove("e2", "e4");
+
+    emit("engine-stdout-w", "bestmove d2d4");
+
+    // Nothing appended past the human's own move; no error.
+    expect(useGameStore.getState().plies.map((p) => p.uci)).toEqual(["e2e4"]);
+    expect(useWhiteEngineStore.getState().status).toBe("ready");
+    expect(useWhiteEngineStore.getState().errorMessage).toBeNull();
+  });
+});
+
+describe("stopSearch", () => {
+  it("sends UCI stop to the engine only when it is thinking", () => {
+    // idle: no-op
+    useWhiteEngineStore.setState({ status: "idle" });
+    mockedInvoke.mockClear();
+    useWhiteEngineStore.getState().stopSearch();
+    expect(mockedInvoke).not.toHaveBeenCalledWith("engine_write_line", expect.anything());
+
+    // thinking: sends stop
+    useWhiteEngineStore.setState({ status: "thinking" });
+    mockedInvoke.mockClear();
+    useWhiteEngineStore.getState().stopSearch();
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", { side: "w", line: "stop" });
+    // Status intentionally stays "thinking" -- the engine will emit a
+    // bestmove in response, which the late-bestmove guard then drops.
+    expect(useWhiteEngineStore.getState().status).toBe("thinking");
+  });
+});

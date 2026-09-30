@@ -158,49 +158,86 @@ To rebuild an existing tag's release (e.g. after a failed run), trigger the work
 
 ```
 src/
-  App.tsx / App.css      top-level layout, wires state to components
+  App.tsx / App.css       top-level layout, wires state to components
   components/
     BoardScene.tsx        the Three.js scene — camera-mode ("2d"|"3d") toggle,
-                           shared square/piece meshes for both views
-    Piece.tsx              one piece mesh; primitive geometry per piece type
-                           (GLTF piece models are a later polish milestone)
-    MoveList.tsx            compact numbered SAN grid, click-to-jump
-    MoveLog.tsx             chronological transcript + live wall clock +
-                           per-move think-time
-    MoveHighlights.tsx      selected-square + legal-destination overlays,
-                           plus a pulsing check/checkmate ring on the king
-    PlaybackControls.tsx    step/play/pause/jump-to-start/end + autoplay
-    GameLoader.tsx          paste-PGN / paste-UCI textarea + "Open PGN file…"
-    EngineControls.tsx      choose engine binary, pick a side, movetime,
-                           start/stop a live game
-    EngineOptions.tsx        one control per UCI `option` the engine advertised
-    AnalysisPanel.tsx        scrolling history of the current search's `info` lines
-    ThemeToggle.tsx, WallClock.tsx
+                          shared square/piece meshes for both views
+    Piece.tsx             one piece mesh; composed-primitive geometry per
+                          piece type (see CLAUDE.md's hard requirements)
+    MoveList.tsx          compact numbered SAN grid, click-to-jump
+    MoveLog.tsx           chronological transcript + per-move think-time
+    MoveHighlights.tsx    selected-square + legal-destination overlays,
+                          plus a pulsing check/checkmate ring on the king
+    PlaybackControls.tsx  step/play/pause/jump-to-start/end + autoplay
+    GameLoader.tsx        paste-PGN / paste-UCI / "Open PGN file…" /
+                          "Load from Lichess" — disabled while any live
+                          session is running
+    EngineControls.tsx    Human-vs-Engine mode: choose binary, pick side,
+                          movetime, start/stop a live game
+    EngineVsEngineControls.tsx  Engine-vs-Engine mode: two engine slots,
+                          both spawn and play against each other
+    LichessControls.tsx   Human-vs-Lichess mode: Board API — currently
+                          paste a game id after saving a personal-access
+                          token
+    LichessBotControls.tsx  Engine-vs-Lichess mode: Bot API — listen for
+                          challenges on a BOT-account token, run a local
+                          engine as the response
+    EngineOptions.tsx     one control per UCI `option` the engine
+                          advertised — rendered only when some side is
+                          engine-controlled
+    AnalysisPanel.tsx     scrolling history of the current search's
+                          `info` lines — same gate as EngineOptions
+    WallClock.tsx         live current-time display in the move log header
   hooks/
-    useAppliedTheme.ts      resolves system/light/dark and applies it
+    useAppliedTheme.ts    resolves system/light/dark and applies it
+    useViewMenu.ts        wires the native View menu to the app's stores;
+                          locks the game-mode group while any live
+                          session is running
   lib/
-    chessRules.ts           the only seam that touches chess.js: PGN/UCI
-                           parsing, FEN-per-ply, think-time derivation,
-                           legal-move lookup, game-over detection
-    uci.ts                  the only seam that parses/builds UCI protocol
-                           lines (bestmove/info in, position/go out) —
-                           src-tauri never parses UCI, see Configuration
-    boardGeometry.ts        algebraic square <-> 3D world coordinates
-    time.ts                 duration/clock formatting
-    engineIdentifier.ts     path -> "owner/repo"-style label for the UI
+    chessRules.ts         the only seam that touches chess.js: PGN/UCI
+                          parsing, FEN-per-ply, think-time derivation,
+                          legal-move lookup, game-over detection
+    uci.ts                the only seam that parses/builds UCI protocol
+                          lines (bestmove/info in, position/go out) —
+                          src-tauri never parses UCI, see Configuration
+    lichess.ts            the only seam that parses Lichess's NDJSON
+                          shapes — move-stream lines and account events;
+                          src-tauri never parses these, same reasoning
+    boardGeometry.ts      algebraic square <-> 3D world coordinates
+    time.ts               duration/clock formatting
+    engineIdentifier.ts   path -> "owner/repo"-style label for the UI
+    boardPalettes.ts      Classic/Forest/Ocean/Slate square colors
+    pieceStyles.ts        Classic/Modern-low-poly piece rendering styles
+    pieceGlyphs.ts        Unicode chess-glyph canvas textures (2D mode)
+    woodTexture.ts        procedural wood-grain board-square texture
   state/
-    gameStore.ts            loaded/live game, current ply, camera mode,
-                           click-to-move selection state
-    engineStore.ts          engine connection status, movetime, watches
-                           gameStore to send position/go on the engine's turn;
-                           selected path + movetime persist across restarts
-    themeStore.ts           theme preference, persisted
+    gameStore.ts          loaded/live game, current ply, camera mode,
+                          controllers/pov, click-to-move selection state
+    engineStore.ts        per-side engine store factory (white/black),
+                          UCI handshake and turn orchestration; selected
+                          path + movetime persist across restarts
+    lichessStore.ts       Human-vs-Lichess: Board API game stream,
+                          human move submission
+    lichessBotStore.ts    Engine-vs-Lichess: Bot API event stream,
+                          challenge accept, engine move submission
+    gameModeStore.ts      persisted game-mode preset (which of the four
+                          mode panels the sidebar renders)
+    themeStore.ts         persisted light/dark theme preference
+    boardThemeStore.ts    persisted board palette choice
+    pieceStyleStore.ts    persisted piece style choice
 src-tauri/
-  src/lib.rs                Tauri Builder + fs/dialog/opener plugins
-  src/engine.rs             spawns/stops the UCI engine process, pipes its
-                           stdout as events — no UCI parsing here, see above
-  capabilities/default.json scoped permissions (see Configuration)
-  tauri.conf.json           explicit CSP
+  src/lib.rs              Tauri Builder + fs/dialog/opener plugins,
+                          engine/Lichess state slots, menu setup
+  src/engine.rs           spawns/stops the UCI engine process, pipes its
+                          stdout as events — no UCI parsing here, see above
+  src/lichess.rs          Lichess HTTP client and NDJSON stream pumper;
+                          validates game ids, moves, usernames; no
+                          protocol parsing (same boundary as engine.rs)
+  src/menu.rs             native menu bar (View menu items + game-mode
+                          radio group)
+  src/debug_log.rs        on-disk debug log, cleared per session/game
+  capabilities/default.json  scoped permissions (see Configuration)
+  tauri.conf.json         explicit CSP
 ```
 
 All chess rules and PGN/UCI parsing live in `src/lib/chessRules.ts`, wrapping [`chess.js`](https://github.com/jhlywa/chess.js). Tests in `chessRules.test.ts` exercise it entirely through its exported functions — no reaching into `chess.js` internals — so the suite survives refactors of how the wrapper is implemented, not just what it currently calls.
