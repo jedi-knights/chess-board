@@ -4,6 +4,7 @@ A Tauri + Three.js desktop app for visualizing and stepping through chess games 
 
 [![CI](https://github.com/jedi-knights/chess-board/actions/workflows/ci.yml/badge.svg)](https://github.com/jedi-knights/chess-board/actions/workflows/ci.yml)
 [![Badge](https://github.com/jedi-knights/chess-board/actions/workflows/badge.yaml/badge.svg)](https://github.com/jedi-knights/chess-board/actions/workflows/badge.yaml)
+[![Release](https://github.com/jedi-knights/chess-board/actions/workflows/release.yml/badge.svg)](https://github.com/jedi-knights/chess-board/actions/workflows/release.yml)
 [![Coverage](https://img.shields.io/badge/Coverage-56.7%25-orange)](https://jedi-knights.github.io/chess-board/?v=35)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -141,6 +142,17 @@ pnpm build           # typecheck + production frontend build
 pnpm tauri build     # full desktop app bundle
 (cd src-tauri && cargo test)  # engine.rs's process-lifecycle unit tests
 ```
+
+### Releasing
+
+Push a `v*` tag (e.g. `v0.1.1`) to publish a universal macOS build (Intel + Apple Silicon) as a GitHub Release — see `.github/workflows/release.yml`. The `.app`/`.dmg` are unsigned (no Apple Developer certificate configured), so Gatekeeper will show an "unidentified developer" prompt on first launch; right-click > Open works around it.
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+To rebuild an existing tag's release (e.g. after a failed run), trigger the workflow manually from the Actions tab or via `gh workflow run release.yml -f tag=v0.1.1`.
 
 ### Layout
 
