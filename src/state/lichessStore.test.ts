@@ -44,6 +44,8 @@ beforeEach(() => {
 
   useLichessStore.setState({
     hasToken: false,
+    verifiedAccount: null,
+    verifyError: null,
     gameId: null,
     status: "idle",
     errorMessage: null,
@@ -96,10 +98,11 @@ describe("movesToApply", () => {
 });
 
 describe("refreshHasToken / setToken / clearToken", () => {
-  it("refreshHasToken reflects whatever the backend reports", async () => {
+  it("refreshHasToken reflects whatever the backend reports and asks about the human slot", async () => {
     mockedInvoke.mockResolvedValueOnce(true);
     await useLichessStore.getState().refreshHasToken();
     expect(useLichessStore.getState().hasToken).toBe(true);
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_token_has", { slot: "human" });
   });
 
   it("refreshHasToken defaults to false when the backend call fails", async () => {
@@ -108,16 +111,54 @@ describe("refreshHasToken / setToken / clearToken", () => {
     expect(useLichessStore.getState().hasToken).toBe(false);
   });
 
-  it("setToken stores the token and flips hasToken", async () => {
+  it("setToken stores the token in the human slot and flips hasToken", async () => {
     await useLichessStore.getState().setToken("secret-token");
     expect(useLichessStore.getState().hasToken).toBe(true);
-    expect(mockedInvoke).toHaveBeenCalledWith("lichess_token_set", { token: "secret-token" });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_token_set", {
+      slot: "human",
+      token: "secret-token",
+    });
   });
 
-  it("clearToken removes the token and flips hasToken back", async () => {
-    useLichessStore.setState({ hasToken: true });
+  it("setToken invalidates any previously-verified account", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "old", username: "old", isBot: false },
+      verifyError: null,
+    });
+    await useLichessStore.getState().setToken("fresh");
+    expect(useLichessStore.getState().verifiedAccount).toBeNull();
+  });
+
+  it("clearToken removes the human-slot token, resets hasToken, and drops the verified account", async () => {
+    useLichessStore.setState({
+      hasToken: true,
+      verifiedAccount: { id: "u", username: "u", isBot: false },
+    });
     await useLichessStore.getState().clearToken();
     expect(useLichessStore.getState().hasToken).toBe(false);
+    expect(useLichessStore.getState().verifiedAccount).toBeNull();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_token_clear", { slot: "human" });
+  });
+});
+
+describe("verifyAccount", () => {
+  it("populates verifiedAccount on success and clears any stale error", async () => {
+    mockedInvoke.mockResolvedValueOnce({ id: "alice", username: "Alice", isBot: false });
+    useLichessStore.setState({ verifyError: "stale" });
+    await useLichessStore.getState().verifyAccount();
+    const state = useLichessStore.getState();
+    expect(state.verifiedAccount).toEqual({ id: "alice", username: "Alice", isBot: false });
+    expect(state.verifyError).toBeNull();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_verify_account", { slot: "human" });
+  });
+
+  it("records the error and drops any stale verified account on failure", async () => {
+    useLichessStore.setState({ verifiedAccount: { id: "u", username: "u", isBot: false } });
+    mockedInvoke.mockRejectedValueOnce(new Error("401 Unauthorized"));
+    await useLichessStore.getState().verifyAccount();
+    const state = useLichessStore.getState();
+    expect(state.verifiedAccount).toBeNull();
+    expect(state.verifyError).toContain("401");
   });
 });
 
@@ -147,6 +188,21 @@ describe("connect", () => {
     expect(state.status).toBe("error");
     expect(state.errorMessage).toContain("network down");
     expect(useGameStore.getState().mode).toBe("replay");
+  });
+
+  it("refuses to connect when the human-slot token belongs to a BOT account", async () => {
+    // Fair-play guard, defense-in-depth: Rust also refuses this, but the
+    // frontend check produces the error without a needless HTTP round-trip.
+    useLichessStore.setState({
+      verifiedAccount: { id: "botty", username: "botty", isBot: true },
+    });
+    await useLichessStore.getState().connect("game-1");
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("BOT account");
+    expect(state.errorMessage).toContain("bot slot");
+    // Never even called the stream command.
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_stream_game", expect.anything());
   });
 });
 

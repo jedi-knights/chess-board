@@ -131,6 +131,21 @@ export function parseLichessAccountEvent(raw: string): LichessAccountEvent | nul
   return null;
 }
 
+/**
+ * Whatever `GET /api/account` reports about the currently-authorized token,
+ * narrowed to the fields the fair-play guard needs. Frontend parallel of
+ * `AccountInfo` in `src-tauri/src/lichess.rs`; the Rust side already
+ * enforces `is_bot`-vs-slot before any HTTP request goes out, and this
+ * type is what `lichess_verify_account` deserializes to.
+ */
+export interface LichessAccountInfo {
+  id: string;
+  username: string;
+  /** True iff Lichess reports `title === "BOT"`. Any other title (GM/IM/FM),
+   * or a missing title, means this is not a bot account. */
+  isBot: boolean;
+}
+
 export interface LichessBotSummary {
   username: string;
   title: string | null;

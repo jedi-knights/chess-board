@@ -2,8 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import type { Ply } from "../lib/chessRules";
-import { isTerminalStatus, parseLichessLine } from "../lib/lichess";
+import {
+  isTerminalStatus,
+  parseLichessLine,
+  type LichessAccountInfo,
+} from "../lib/lichess";
 import { useGameStore } from "./gameStore";
+
+/** Every Lichess Tauri command that authenticates carries a `slot: TokenSlot`
+ * discriminator (`"human"|"bot"`) so Rust picks the right keychain entry.
+ * This module always uses `human` -- see `TokenSlot`'s doc comment in
+ * `src-tauri/src/lichess.rs` for why the slot is a first-class enum. */
+const HUMAN_SLOT = "human" as const;
 
 export type LichessStatus = "idle" | "connecting" | "connected" | "error" | "gameOver";
 
@@ -40,6 +50,16 @@ export function movesToApply(moves: string[], localPlyCount: number): string[] {
 
 interface LichessStoreState {
   hasToken: boolean;
+  /** Whatever the human slot's `GET /api/account` returned on the most
+   * recent verify call. `null` while pending, unset, or after a token
+   * clear -- the UI reads this to show the verified username and to gate
+   * Connect on the account actually being non-BOT (fair-play). */
+  verifiedAccount: LichessAccountInfo | null;
+  /** Error from the most recent verify call, e.g. "this is a BOT
+   * account -- put it in the bot slot". Kept separate from
+   * `errorMessage` so a stale verify error doesn't wipe a live
+   * connection failure and vice versa. */
+  verifyError: string | null;
   gameId: string | null;
   status: LichessStatus;
   errorMessage: string | null;
@@ -48,6 +68,9 @@ interface LichessStoreState {
   refreshHasToken: () => Promise<void>;
   setToken: (token: string) => Promise<void>;
   clearToken: () => Promise<void>;
+  /** Live-fetch `/api/account` under the human slot and cache the result.
+   * Populates `verifiedAccount` on success, `verifyError` on failure. */
+  verifyAccount: () => Promise<void>;
   connect: (gameIdOrUrl: string) => Promise<void>;
   disconnect: () => Promise<void>;
 }
@@ -138,24 +161,45 @@ const NOT_CONNECTED = new Set<LichessStatus>(["idle", "error", "gameOver"]);
 
 export const useLichessStore = create<LichessStoreState>((set, get) => ({
   hasToken: false,
+  verifiedAccount: null,
+  verifyError: null,
   gameId: null,
   status: "idle",
   errorMessage: null,
   lastSentUci: null,
 
   refreshHasToken: async () => {
-    const hasToken = await invoke<boolean>("lichess_token_has").catch(() => false);
+    const hasToken = await invoke<boolean>("lichess_token_has", { slot: HUMAN_SLOT }).catch(
+      () => false,
+    );
     set({ hasToken });
   },
 
   setToken: async (token) => {
-    await invoke("lichess_token_set", { token });
-    set({ hasToken: true });
+    await invoke("lichess_token_set", { slot: HUMAN_SLOT, token });
+    // A new token means any previously verified account for this slot
+    // is stale -- Rust already invalidated its own cache; mirror that
+    // on the frontend so the UI doesn't briefly show the old username
+    // before the next verify call lands.
+    set({ hasToken: true, verifiedAccount: null, verifyError: null });
   },
 
   clearToken: async () => {
-    await invoke("lichess_token_clear");
-    set({ hasToken: false });
+    await invoke("lichess_token_clear", { slot: HUMAN_SLOT });
+    set({ hasToken: false, verifiedAccount: null, verifyError: null });
+  },
+
+  verifyAccount: async () => {
+    try {
+      const info = await invoke<LichessAccountInfo>("lichess_verify_account", {
+        slot: HUMAN_SLOT,
+      });
+      set({ verifiedAccount: info, verifyError: null });
+      logDebug(`verified: ${info.username} (isBot=${info.isBot})`);
+    } catch (err) {
+      set({ verifiedAccount: null, verifyError: String(err) });
+      logDebug(`verify failed: ${String(err)}`);
+    }
   },
 
   connect: async (gameIdOrUrl) => {
@@ -163,6 +207,19 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
     // duplicate call while a connect is already in flight would otherwise
     // start a second stream task that immediately aborts the first one.
     if (!NOT_CONNECTED.has(get().status)) return;
+
+    // Fair-play guard, mirrored on the frontend for a fast, clear error:
+    // Rust's `token_for_slot_verified` will also refuse a BOT account on
+    // the human slot, but running the check locally when the cached
+    // verify result already answers it avoids a needless HTTP round-trip
+    // just to produce the same error message.
+    const verified = get().verifiedAccount;
+    if (verified?.isBot) {
+      failLichess(
+        `the human slot's token belongs to a BOT account ("${verified.username}") -- put it in the bot slot instead`,
+      );
+      return;
+    }
 
     installListenersOnce();
     set({

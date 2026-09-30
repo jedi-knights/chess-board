@@ -2,14 +2,30 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { isTerminalStatus, parseLichessAccountEvent, parseLichessLine } from "../lib/lichess";
+import {
+  isTerminalStatus,
+  parseLichessAccountEvent,
+  parseLichessLine,
+  type LichessAccountInfo,
+} from "../lib/lichess";
 import { engineStoreForSide } from "./engineStore";
 import { useGameStore } from "./gameStore";
 import { movesToApply, pendingMoveToSend } from "./lichessStore";
 
 export type LichessBotStatus = "idle" | "listening" | "playing" | "error";
 
+/** See `HUMAN_SLOT` in lichessStore.ts -- this module's counterpart for
+ * the Bot slot. Rust decides which keychain entry gets read; JS just
+ * tags every call with the string discriminator. */
+const BOT_SLOT = "bot" as const;
+
 interface LichessBotStoreState {
+  /** Whether a bot-slot token is currently stored in the OS keychain. */
+  hasToken: boolean;
+  /** Last verify result for the bot slot; see the human-side counterpart
+   * in `lichessStore.ts` for the same rationale. */
+  verifiedAccount: LichessAccountInfo | null;
+  verifyError: string | null;
   /** This mode's engine choice, independent of the White/Black engine
    * slots -- Bot API mode doesn't know which color Lichess will assign
    * the bot until a challenge actually arrives, so it can't pin its
@@ -24,6 +40,12 @@ interface LichessBotStoreState {
   activeGameId: string | null;
   lastSentUci: string | null;
 
+  refreshHasToken: () => Promise<void>;
+  setToken: (token: string) => Promise<void>;
+  clearToken: () => Promise<void>;
+  /** Live-fetch `/api/account` under the bot slot; see human-side
+   * `verifyAccount` for the same rationale. */
+  verifyAccount: () => Promise<void>;
   setEnginePath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
@@ -56,7 +78,7 @@ function failBot(message: string) {
 async function handleChallenge(challengeId: string) {
   logDebug(`auto-accepting challenge: ${challengeId}`);
   try {
-    await invoke("lichess_challenge_accept", { challengeId });
+    await invoke("lichess_challenge_accept", { slot: BOT_SLOT, challengeId });
   } catch (err) {
     // A single rejected/expired challenge isn't fatal to the listening
     // session -- log it and keep listening for the next one, rather than
@@ -205,12 +227,45 @@ const NOT_LISTENING = new Set<LichessBotStatus>(["idle", "error"]);
 export const useLichessBotStore = create<LichessBotStoreState>()(
   persist(
     (set, get) => ({
+      hasToken: false,
+      verifiedAccount: null,
+      verifyError: null,
       enginePath: null,
       movetimeMs: 1000,
       status: "idle",
       errorMessage: null,
       activeGameId: null,
       lastSentUci: null,
+
+      refreshHasToken: async () => {
+        const hasToken = await invoke<boolean>("lichess_token_has", { slot: BOT_SLOT }).catch(
+          () => false,
+        );
+        set({ hasToken });
+      },
+
+      setToken: async (token) => {
+        await invoke("lichess_token_set", { slot: BOT_SLOT, token });
+        set({ hasToken: true, verifiedAccount: null, verifyError: null });
+      },
+
+      clearToken: async () => {
+        await invoke("lichess_token_clear", { slot: BOT_SLOT });
+        set({ hasToken: false, verifiedAccount: null, verifyError: null });
+      },
+
+      verifyAccount: async () => {
+        try {
+          const info = await invoke<LichessAccountInfo>("lichess_verify_account", {
+            slot: BOT_SLOT,
+          });
+          set({ verifiedAccount: info, verifyError: null });
+          logDebug(`verified: ${info.username} (isBot=${info.isBot})`);
+        } catch (err) {
+          set({ verifiedAccount: null, verifyError: String(err) });
+          logDebug(`verify failed: ${String(err)}`);
+        }
+      },
 
       setEnginePath: (enginePath) => set({ enginePath }),
       setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
@@ -219,7 +274,10 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         logDebug("requesting bot account upgrade");
         try {
           await invoke("lichess_bot_upgrade");
-          set({ errorMessage: null });
+          // Upgrade succeeded -- Rust already invalidated its cache; drop
+          // ours so the UI re-verifies and shows the new (BOT) title
+          // instead of the stale "regular account" one.
+          set({ errorMessage: null, verifiedAccount: null, verifyError: null });
           return true;
         } catch (err) {
           set({ errorMessage: String(err) });
@@ -231,11 +289,24 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         // Re-entrancy guard, same reasoning as engineStore/lichessStore.
         if (!NOT_LISTENING.has(get().status)) return;
 
+        // Fair-play guard, mirrored on the frontend for a fast, clear
+        // error: Rust's `token_for_slot_verified` will also refuse a
+        // non-BOT account on the bot slot, but running the check locally
+        // when the cached verify result already answers it avoids a
+        // needless HTTP round-trip just to produce the same error.
+        const verified = get().verifiedAccount;
+        if (verified && !verified.isBot) {
+          failBot(
+            `the bot slot's token belongs to a non-BOT account ("${verified.username}") -- either use the human slot or upgrade this account to BOT`,
+          );
+          return;
+        }
+
         installListenersOnce();
         set({ status: "listening", errorMessage: null, activeGameId: null, lastSentUci: null });
         logDebug("listening for challenges");
         try {
-          await invoke("lichess_stream_events");
+          await invoke("lichess_stream_events", { slot: BOT_SLOT });
         } catch (err) {
           failBot(String(err));
         }
