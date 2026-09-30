@@ -110,12 +110,19 @@ export function Piece({ type, color, position, square, animateFrom }: PieceProps
  * because it's a flat plane with a texture, not a 3D silhouette.
  */
 function PieceGlyph({ type, color }: { type: PieceOnSquare["type"]; color: PieceOnSquare["color"] }) {
+  const pov = useGameStore((s) => s.pov);
   const texture = useMemo(() => {
     const glyph = getPieceGlyph(type);
     const fill = color === "w" ? WHITE_MATERIAL_COLOR : BLACK_MATERIAL_COLOR;
     const stroke = color === "w" ? BLACK_MATERIAL_COLOR : WHITE_MATERIAL_COLOR;
-    return createGlyphTexture(glyph, fill, stroke);
-  }, [type, color]);
+    // The mesh's fixed 3D rotation below reads correctly for POV black
+    // but upside-down for POV white (BoardScene's 2D camera flips its
+    // `up` vector between the two, and this plane's world-space rotation
+    // does not follow it). Correcting that by flipping the *texture*
+    // itself, in 2D canvas space, rather than adding a second 3D mesh
+    // rotation -- see createGlyphTexture's own comment for why.
+    return createGlyphTexture(glyph, fill, stroke, pov === "w");
+  }, [type, color, pov]);
 
   useEffect(() => {
     return () => texture.dispose();
@@ -124,20 +131,17 @@ function PieceGlyph({ type, color }: { type: PieceOnSquare["type"]; color: Piece
   return (
     // rotation=[-PI/2,0,0] tips the plane from its default XY orientation
     // (facing +Z) to lie flat facing +Y -- straight up at the fixed
-    // top-down 2D camera. This is a fixed world-space transform, the same
-    // for every piece, both colors, both POV settings -- BoardScene's 2D
-    // camera flips its `up` vector between white/black POV, not this
-    // plane's rotation, and that's enough on its own for the glyph to
-    // read face-up and right-side-up in both POVs (verified live,
-    // tight-cropped on the pawn glyph specifically -- its silhouette is
-    // asymmetric enough to actually reveal a flip, unlike the rook/king/
-    // queen). side=DoubleSide guards the "visible at all" half of that:
-    // only one side of the plane is ever visible anyway, since the 2D
-    // camera is always directly above looking straight down, so there's
-    // no reason to risk the default FrontSide back-face-culling the
-    // texture to invisible over any future change to this rotation or the
-    // camera setup. Do not change this without re-verifying the pawn
-    // glyph face-up, ball-on-top, visible, in both POVs.
+    // top-down 2D camera. This is a fixed world-space transform, never
+    // POV-dependent -- POV correction happens in the texture (above), not
+    // here. side=DoubleSide: only one side of this plane is ever visible
+    // anyway, since the 2D camera is always directly above looking
+    // straight down, so there's no reason to risk the default FrontSide
+    // back-face-culling the texture to invisible over any future change
+    // to this rotation or the camera setup. Do not change either without
+    // re-verifying, via an actual tight crop (not a whole-board
+    // screenshot -- the rook/king/queen are too close to top-bottom-
+    // symmetric to reveal a flip), that the pawn glyph is face-up,
+    // ball-on-top, in both POVs.
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
       <planeGeometry args={[0.75, 0.75]} />
       <meshBasicMaterial map={texture} transparent alphaTest={0.05} side={DoubleSide} />
