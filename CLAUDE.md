@@ -251,13 +251,37 @@ this file and the human-facing docs.
   `boardGeometry.test.ts`, `engineIdentifier.test.ts`, `boardPalettes.test.ts`,
   `pieceStyles.test.ts`, `pieceGlyphs.test.ts`, `woodTexture.test.ts`, `lichess.test.ts`.
 - State modules with real logic get their own test file: `gameStore.test.ts`
-  (controllers/pov gating, `attemptMove`), `engineStore.test.ts` (`formatEngineExitMessage`
-  plus a two-slot-independence smoke test — the rest of that module is Tauri-invoke
-  orchestration), `lichessStore.test.ts` (`pendingMoveToSend`/`movesToApply`, both
-  exported so `lichessBotStore` can reuse them). State modules that are pure persisted UI
-  preference (`gameModeStore.ts`, `boardThemeStore.ts`, `pieceStyleStore.ts`) or pure
-  Tauri-invoke orchestration with no exported pure logic (`lichessBotStore.ts`) have no
-  test file, same reasoning as `engineStore.ts`'s orchestration half.
+  (controllers/pov gating, `attemptMove`, playback navigation, cosmetic setters).
+  `engineStore.test.ts` and `lichessStore.test.ts` mock `@tauri-apps/api/core`'s `invoke`
+  and `@tauri-apps/api/event`'s `listen` — Tauri's own IPC boundary is a genuine system
+  edge (same carve-out as mocking a Stripe/S3 client), not a same-team collaborator, so
+  this doesn't violate the black-box rule above. The `listen` mock captures each
+  registered callback by event name in a `Map`, and tests "deliver" a fake
+  `engine-stdout-{side}`/`engine-exit-{side}` (or `lichess-game-stream`/`lichess-game-exit`)
+  event by invoking that captured callback directly — the same public seam a real Tauri
+  event arrives through, not a reach into the store's private closures. That map is
+  deliberately *not* cleared between tests: `installListenersOnce` in both modules only
+  ever calls `listen()` once per store instance for the lifetime of the module (mirrors
+  production — installed once per app lifetime), so clearing the map in `beforeEach`
+  would desync the test double from what the store actually does after the first test in
+  the file. Coverage went from ~12%/14% to >90% on both modules this way: re-entrancy
+  guards, success/failure paths, the `stopRequested` latch, and every listener-driven
+  state transition (bestmove applied/duplicate/illegal, `info`/`option` upserts, Lichess
+  move-stream application, terminal-status handling) are now exercised through real
+  `gameStore`/store state, not just asserted-present. State modules that are pure
+  persisted UI preference (`gameModeStore.ts`, `boardThemeStore.ts`, `pieceStyleStore.ts`)
+  or pure Tauri-invoke orchestration with no exported pure logic (`lichessBotStore.ts`)
+  still have no test file — extending the same IPC-boundary-mock pattern to them is a
+  reasonable future follow-up, not done yet since neither was part of the coverage push
+  that motivated this section.
+- `pieceGlyphs.ts`'s `createGlyphTexture` and `woodTexture.ts`'s `createWoodTexture` are
+  wrapped in `/* v8 ignore start|stop */` with an inline reason: both call
+  `document.createElement("canvas")`, which throws in Vitest's `node` test environment
+  (see `vite.config.ts`) — supporting them would mean adding jsdom plus the native
+  `canvas` npm package (a Cairo system dependency) for two small procedural-texture
+  functions, disproportionate to the payoff. Their pure helpers (`getPieceGlyph`,
+  `hexToRgb`, `clampByte` — the last exported specifically so it has a test, since it has
+  no DOM dependency of its own) are still fully tested.
 - Rust: `engine.rs` has unit tests for the pure state-transition helpers (`write_line_locked`,
   `stop_locked` with no process running, the `stderr_tail` cap, two-engine-slot
   independence) that don't need a real `AppHandle`. The path-validation and actual-
