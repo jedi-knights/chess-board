@@ -36,7 +36,12 @@ const TEXTURE_SIZE = 128;
  * (white pieces: white fill, dark outline; black pieces: dark fill, light
  * outline).
  */
-export function createGlyphTexture(glyph: string, fill: string, stroke: string): CanvasTexture {
+export function createGlyphTexture(
+  glyph: string,
+  fill: string,
+  stroke: string,
+  flip = false,
+): CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = TEXTURE_SIZE;
   canvas.height = TEXTURE_SIZE;
@@ -46,6 +51,21 @@ export function createGlyphTexture(glyph: string, fill: string, stroke: string):
     // fail closed with a blank texture rather than throwing and taking
     // the whole board render down with it.
     return new CanvasTexture(canvas);
+  }
+
+  // `flip` rotates the drawing 180 degrees in canvas space (a plain 2D
+  // point reflection) before drawing the glyph -- used by Piece.tsx to
+  // correct for POV white, where the mesh's fixed 3D rotation reads
+  // upside-down. This is deliberately a 2D canvas transform, not a 3D
+  // mesh rotation: composing 3D rotations to land the texture right-side
+  // up while keeping the plane's face normal pointed at the camera is
+  // exactly the kind of hand-derived matrix math that's cheap to get
+  // wrong (it was, twice). A canvas rotate's effect is directly
+  // verifiable by looking at the drawn pixels, with no 3D reasoning
+  // required.
+  if (flip) {
+    ctx.translate(TEXTURE_SIZE, TEXTURE_SIZE);
+    ctx.rotate(Math.PI);
   }
 
   const centerX = TEXTURE_SIZE / 2;
