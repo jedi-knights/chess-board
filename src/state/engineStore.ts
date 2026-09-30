@@ -104,6 +104,21 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
 
   function applyEngineBestMove(move: string) {
     logDebug(`received bestmove: ${move}`);
+    // A duplicate delivery of the exact move just applied is not a real
+    // illegal move -- it's the same bestmove arriving twice (observed in
+    // dev: `listen()`'s unlisten handle is never stored/called, so a Vite
+    // HMR re-evaluation of this module attaches a second listener onto
+    // the same Rust-side engine-stdout-{side} event without removing the
+    // first; both then apply the one bestmove Rust actually emitted).
+    // Silently ignoring an exact repeat of the last ply is correct
+    // regardless of *why* it arrived twice -- tanking the whole game over
+    // a harmless duplicate would be worse than a missing defensive check.
+    const plies = useGameStore.getState().plies;
+    const lastPly = plies[plies.length - 1];
+    if (lastPly?.uci === move) {
+      logDebug(`ignoring duplicate bestmove: ${move}`);
+      return;
+    }
     const from = move.slice(0, 2);
     const to = move.slice(2, 4);
     const promotion = move.length > 4 ? move.slice(4, 5) : undefined;
