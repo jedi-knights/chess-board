@@ -1,7 +1,8 @@
-import { useLayoutEffect, useMemo, useRef, type JSX } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type JSX } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Group, Shape } from "three";
 import type { PieceOnSquare } from "../lib/chessRules";
+import { createGlyphTexture, getPieceGlyph } from "../lib/pieceGlyphs";
 import { getPieceStyle, type PieceStyle } from "../lib/pieceStyles";
 import { useGameStore } from "../state/gameStore";
 import { usePieceStyleStore } from "../state/pieceStyleStore";
@@ -59,6 +60,7 @@ export function Piece({ type, color, position, square, animateFrom }: PieceProps
   const animStartTime = useRef(0);
   const materialColor = color === "w" ? WHITE_MATERIAL_COLOR : BLACK_MATERIAL_COLOR;
   const style = getPieceStyle(usePieceStyleStore((s) => s.style));
+  const cameraMode = useGameStore((s) => s.cameraMode);
 
   useLayoutEffect(() => {
     const group = groupRef.current;
@@ -88,8 +90,42 @@ export function Piece({ type, color, position, square, animateFrom }: PieceProps
         useGameStore.getState().selectSquare(square);
       }}
     >
-      <PieceBody type={type} color={materialColor} style={style} />
+      {cameraMode === "2d" ? (
+        <PieceGlyph type={type} color={color} />
+      ) : (
+        <PieceBody type={type} color={materialColor} style={style} />
+      )}
     </group>
+  );
+}
+
+/**
+ * The 2D-mode piece representation: a flat, camera-facing icon instead of
+ * the 3D geometry. A top-down photo of a 3D piece is a fundamentally
+ * different (and much weaker) representation than the universal 2D chess
+ * convention -- every reference image, every icon set, and every real
+ * chess UI draws pieces as a colored, outlined side-profile silhouette.
+ * From directly above, this app's 3D pieces used to read as nearly
+ * identical discs; this reads correctly regardless of viewing angle
+ * because it's a flat plane with a texture, not a 3D silhouette.
+ */
+function PieceGlyph({ type, color }: { type: PieceOnSquare["type"]; color: PieceOnSquare["color"] }) {
+  const texture = useMemo(() => {
+    const glyph = getPieceGlyph(type);
+    const fill = color === "w" ? WHITE_MATERIAL_COLOR : BLACK_MATERIAL_COLOR;
+    const stroke = color === "w" ? BLACK_MATERIAL_COLOR : WHITE_MATERIAL_COLOR;
+    return createGlyphTexture(glyph, fill, stroke);
+  }, [type, color]);
+
+  useEffect(() => {
+    return () => texture.dispose();
+  }, [texture]);
+
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+      <planeGeometry args={[0.75, 0.75]} />
+      <meshBasicMaterial map={texture} transparent alphaTest={0.05} />
+    </mesh>
   );
 }
 
