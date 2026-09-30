@@ -4,6 +4,41 @@
  * Lichess event field directly. Mirrors uci.ts's role for the UCI protocol.
  */
 
+/**
+ * Lichess emits an `opponentGone` NDJSON line on the game stream when
+ * the opponent leaves the board (closes the tab, loses connection).
+ * `gone: true` means they're currently absent; `claimWinInSeconds`
+ * counts down until the local player can win by claim. Once the
+ * opponent returns, another `opponentGone: false` line arrives.
+ */
+export interface LichessOpponentGone {
+  gone: boolean;
+  /** Seconds until this player can `/claim-victory`. `null` while the
+   * opponent is present (or hasn't been gone long enough yet), or on
+   * game types that don't support claim-victory (correspondence). */
+  claimWinInSeconds: number | null;
+}
+
+/** Parses an `opponentGone` line. Returns `null` for anything else --
+ * `parseLichessLine` handles gameFull/gameState in parallel; both
+ * parsers run on every incoming stream line so no data is dropped. */
+export function parseLichessOpponentGone(raw: string): LichessOpponentGone | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof json !== "object" || json === null) return null;
+  const obj = json as Record<string, unknown>;
+  if (obj.type !== "opponentGone") return null;
+  const gone = obj.gone === true;
+  const claimRaw = obj.claimWinInSeconds;
+  const claimWinInSeconds =
+    typeof claimRaw === "number" && Number.isFinite(claimRaw) ? claimRaw : null;
+  return { gone, claimWinInSeconds };
+}
+
 export interface LichessMoveUpdate {
   /** Every move played so far, from the start of the game, in UCI notation. */
   moves: string[];

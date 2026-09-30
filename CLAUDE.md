@@ -283,6 +283,33 @@ this file and the human-facing docs.
   `LichessDeclineReason`.** `"random" | "white" | "black"` -- anything else is
   rejected at deserialize time before it can reach a request URL. `AI` challenges
   are always casual (Lichess policy); every other new endpoint accepts `rated`.
+- **Every in-game Lichess action goes through a slot-forced Rust command.** Resign,
+  abort, draw offer/accept/decline, and claim-victory each ship as two commands: a
+  Board-API one hardcoded to the Human slot (`lichess_resign`/`_abort`/`_draw`/
+  `_claim_victory`), and a Bot-API one hardcoded to the Bot slot (`lichess_bot_resign`/
+  `_abort`/`_draw`/`_claim_victory`). Both routes converge on a private
+  `game_action_impl(kind, slot, action)` that owns the URL formatting and error
+  shape. Adding a new in-game action means adding both a Board and Bot command,
+  never a single dual-slot one -- that's the same rule as PR 1's
+  stream/move commands and for the same reason.
+- **`draw/yes` is both "offer" and "accept"; the app deliberately doesn't split them.**
+  Lichess's endpoint semantics are context-dependent: if an opponent's offer is
+  pending it means accept, otherwise it means offer. `agreeToDraw()` on both stores
+  maps to `/draw/yes`; `declineDraw()` maps to `/draw/no`. Do not add a separate
+  `offerDraw` action -- there is no separate endpoint to call.
+- **`opponentGone` is captured from the game stream via a *second* parser run alongside
+  `parseLichessLine`.** The two parsers (`parseLichessLine` for gameFull/gameState,
+  `parseLichessOpponentGone` for the eponymous line type) share the NDJSON channel;
+  every incoming line is offered to both, and both correctly return `null` for
+  anything they don't recognize. Do not merge them into one giant discriminated-union
+  parser -- keeping the shapes separate makes each easier to test and change without
+  touching the other.
+- **Claim Victory is gated locally on a client-side countdown, not on the server
+  saying it's OK yet.** `LiveGameActions` interpolates a per-second decrement from
+  Lichess's `claimWinInSeconds` and enables the button when it hits zero. Firing
+  the endpoint early is a wasted round-trip but not otherwise harmful (Lichess
+  400s a premature claim); the gate exists to make that misuse unlikely from the
+  UI, not to enforce a security invariant.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via

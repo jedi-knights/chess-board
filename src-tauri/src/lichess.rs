@@ -1155,6 +1155,173 @@ pub fn lichess_stop_seek(state: State<'_, LichessSeekConnection>) -> Result<(), 
     stop_stream_locked(&state.0)
 }
 
+/// Shared body of the in-game action commands (resign / abort / draw /
+/// claim-victory). `kind` picks the API surface (`"board"` for the
+/// human-slot commands, `"bot"` for the bot-slot commands) and `action`
+/// is the path segment appended after `/{game_id}/` (e.g. `"resign"`,
+/// `"draw/yes"`). The `slot` is a hardcoded constant at every call site --
+/// never a JS-supplied parameter -- so a compromised frontend can't ask
+/// the wrong token to POST to the wrong API surface.
+async fn game_action_impl(
+    account_cache: SharedAccountCache,
+    game_id_or_url: String,
+    slot: TokenSlot,
+    kind: &str,
+    action: &str,
+) -> Result<(), String> {
+    let game_id = parse_game_id(&game_id_or_url)?;
+    let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/{kind}/game/{game_id}/{action}");
+    let response = client
+        .post(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "lichess rejected {action} on game {game_id}: {status} {body}"
+        ));
+    }
+    Ok(())
+}
+
+// ---------- Board API in-game actions (Human slot) ----------
+
+#[tauri::command]
+pub async fn lichess_resign(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Human,
+        "board",
+        "resign",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn lichess_abort(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Human,
+        "board",
+        "abort",
+    )
+    .await
+}
+
+/// Offer or agree to a draw (`accept: true` -> `/draw/yes`); or decline
+/// the opponent's pending offer (`accept: false` -> `/draw/no`).
+/// Lichess treats `/draw/yes` as *both* "offer" and "accept" depending
+/// on whether an opponent's offer is already pending, so this app
+/// deliberately does not maintain two separate offer/accept endpoints.
+#[tauri::command]
+pub async fn lichess_draw(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+    accept: bool,
+) -> Result<(), String> {
+    let action = if accept { "draw/yes" } else { "draw/no" };
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Human,
+        "board",
+        action,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn lichess_claim_victory(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Human,
+        "board",
+        "claim-victory",
+    )
+    .await
+}
+
+// ---------- Bot API in-game actions (Bot slot) ----------
+
+#[tauri::command]
+pub async fn lichess_bot_resign(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Bot,
+        "bot",
+        "resign",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn lichess_bot_abort(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Bot,
+        "bot",
+        "abort",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn lichess_bot_draw(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+    accept: bool,
+) -> Result<(), String> {
+    let action = if accept { "draw/yes" } else { "draw/no" };
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Bot,
+        "bot",
+        action,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn lichess_bot_claim_victory(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+) -> Result<(), String> {
+    game_action_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        TokenSlot::Bot,
+        "bot",
+        "claim-victory",
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
