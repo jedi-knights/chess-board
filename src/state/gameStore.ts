@@ -50,6 +50,15 @@ interface GameState {
   setPlaybackDelayMs: (ms: number) => void;
 
   startNewGame: (controllers: Controllers, pov?: "w" | "b") => void;
+  /** Replaces `controllers` mid-game without touching plies/ply/mode.
+   * Deliberately narrow: for the case where the caller starts the game
+   * with a placeholder (e.g. `{ w: "lichess", b: "lichess" }` when it
+   * doesn't yet know which side the human plays) and needs to promote
+   * one side to `"human"` once the answer arrives (Lichess `gameFull`
+   * with a `white.id` / `black.id` we can compare to the verified
+   * account). Do not use for "start a new game" -- that's what
+   * `startNewGame` is for. */
+  setControllers: (controllers: Controllers, pov?: "w" | "b") => void;
   enterPlayMode: () => void;
   exitPlayMode: () => void;
   selectSquare: (square: string) => void;
@@ -131,6 +140,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       selectedSquare: null,
       legalDestinationSquares: [],
       loadError: null,
+    })),
+
+  setControllers: (controllers, pov) =>
+    set((state) => ({
+      controllers,
+      pov: pov ?? state.pov,
     })),
 
   enterPlayMode: () => set({ mode: "play" }),

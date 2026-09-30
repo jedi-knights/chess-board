@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useBlackEngineStore, useWhiteEngineStore } from "./engineStore";
+import { useGameModeStore } from "./gameModeStore";
 import { useGameStore } from "./gameStore";
 import { useLichessBotStore } from "./lichessBotStore";
 
@@ -35,6 +36,12 @@ beforeEach(() => {
   useGameStore.getState().startNewGame({ w: "human", b: "human" });
   useGameStore.getState().enterPlayMode();
 
+  // PR 4 moved the account-event listener into a shared `lichessEventBus`
+  // that dispatches by the current game-mode preset. These tests target
+  // bot-mode behavior, so pin the preset here -- otherwise every event
+  // is dropped by the bus (correctly) and the accept/decline invokes
+  // never fire.
+  useGameModeStore.setState({ preset: "engine-vs-lichess" });
   useLichessBotStore.setState({
     hasToken: false,
     verifiedAccount: null,

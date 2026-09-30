@@ -5,9 +5,11 @@ import type { Ply } from "../lib/chessRules";
 import {
   isTerminalStatus,
   parseLichessLine,
+  type LichessAccountEvent,
   type LichessAccountInfo,
   type LichessMoveUpdate,
 } from "../lib/lichess";
+import { installLichessEventBusOnce } from "../lib/lichessEventBus";
 import { useGameStore } from "./gameStore";
 
 /** Every Lichess Tauri command that authenticates carries a `slot: TokenSlot`
@@ -29,6 +31,28 @@ export interface LiveClocks {
 }
 
 export type LichessStatus = "idle" | "connecting" | "connected" | "error" | "gameOver";
+
+/** Long-poll status of `POST /api/board/seek`. `"seeking"` while the
+ * seek request is in flight (Lichess holds it open until a match);
+ * `"idle"` otherwise. Independent of the game-stream `status` above
+ * because a match happens in a specific order (seek closes -> gameStart
+ * on event stream -> game stream opens) and the two lifecycles overlap. */
+export type SeekStatus = "idle" | "seeking";
+
+/** Which color the caller wants to play in a seek/challenge. Mirrors
+ * the Rust `ChallengeColor` enum; wire tags must match exactly. */
+export type LichessColor = "random" | "white" | "black";
+
+/** Time-control shape used by every human-mode initiator (seek, challenge
+ * user, challenge AI). Kept as a shared type rather than duplicated per
+ * action so a UI change (e.g. adding a preset picker) only edits one
+ * shape. */
+export interface LichessTimeControl {
+  /** Base time in minutes, 0-180 (Lichess Board API limit). */
+  minutes: number;
+  /** Increment in seconds, 0-60. */
+  increment: number;
+}
 
 /**
  * Which of the plies just appended (if any) is `side`'s own move that
@@ -75,6 +99,7 @@ interface LichessStoreState {
   verifyError: string | null;
   gameId: string | null;
   status: LichessStatus;
+  seekStatus: SeekStatus;
   errorMessage: string | null;
   lastSentUci: string | null;
   /** Most recent server clock snapshot for the live game. `null` until
@@ -87,8 +112,38 @@ interface LichessStoreState {
   /** Live-fetch `/api/account` under the human slot and cache the result.
    * Populates `verifiedAccount` on success, `verifyError` on failure. */
   verifyAccount: () => Promise<void>;
-  connect: (gameIdOrUrl: string) => Promise<void>;
+  /** Board API seek. Opens the account event stream (so `gameStart` can
+   * auto-connect the game stream on match) then POSTs the seek. The
+   * seek request stays open on the server until matched or aborted. */
+  seek: (opts: { time: LichessTimeControl; rated: boolean; color: LichessColor }) => Promise<void>;
+  /** Aborts an in-flight seek. Idempotent when no seek is active. */
+  stopSeek: () => Promise<void>;
+  /** Challenges a specific Lichess user by name. Same auto-connect flow
+   * as seek: the account event stream fires `gameStart` when the
+   * opponent accepts. */
+  challengeUser: (opts: {
+    username: string;
+    time: LichessTimeControl;
+    rated: boolean;
+    color: LichessColor;
+  }) => Promise<void>;
+  /** Challenges the Lichess AI (Stockfish, level 1-8). Always casual. */
+  challengeAi: (opts: {
+    level: number;
+    time: LichessTimeControl;
+    color: LichessColor;
+  }) => Promise<void>;
+  /** Connect to an existing game by id -- kept as a fallback alongside
+   * seek/challenge/AI for cases like "opponent already sent me a
+   * challenge on lichess.org and I want to play it here". */
+  joinGameById: (gameIdOrUrl: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  /** Called by `lichessEventBus` for every event on the account event
+   * stream while `human-vs-lichess` is the active mode. `gameStart`
+   * auto-connects the game stream; other events are logged for the
+   * debug timeline. */
+  handleAccountEvent: (event: LichessAccountEvent) => void;
+  handleEventStreamExit: (reason: string) => void;
 }
 
 /** Fire-and-forget append to the on-disk debug log, same convention as
@@ -155,6 +210,47 @@ function annotateLastPlyThinkTime(
   });
 }
 
+/** Derives which side (`"w" | "b" | null`) the verified human account
+ * plays in this game, by comparing the account's id against the
+ * `white.id` / `black.id` in a `gameFull` line. `null` when the account
+ * isn't verified yet, when the line isn't a `gameFull` (subsequent
+ * `gameState` lines don't carry ids), or when neither id matches --
+ * the last case is a spectator connection, which this app doesn't
+ * currently support in human mode. */
+function deriveHumanSide(update: LichessMoveUpdate): "w" | "b" | null {
+  const account = useLichessStore.getState().verifiedAccount;
+  if (!account) return null;
+  if (update.whiteId === account.id) return "w";
+  if (update.blackId === account.id) return "b";
+  return null;
+}
+
+/** Called once per game as soon as the first `gameFull` arrives with
+ * enough info to pick sides. Promotes the initial "both lichess"
+ * placeholder to a real `{ human, lichess }` pair and updates POV to
+ * match. Idempotent -- re-running on a stale `gameFull` reproduces the
+ * same controllers set. */
+function applyDerivedControllers(update: LichessMoveUpdate) {
+  if (update.whiteId === null && update.blackId === null) return;
+  const humanSide = deriveHumanSide(update);
+  if (humanSide === null) {
+    // Spectator: leave placeholder as-is; moves stay locked because
+    // neither side is human-controlled. Log so a user staring at a
+    // "why can't I move" UI can find the reason in debug.log.
+    logDebug(
+      `neither white (${update.whiteId ?? "?"}) nor black (${update.blackId ?? "?"}) matches this account`,
+    );
+    return;
+  }
+  useGameStore.getState().setControllers(
+    {
+      w: humanSide === "w" ? "human" : "lichess",
+      b: humanSide === "b" ? "human" : "lichess",
+    },
+    humanSide,
+  );
+}
+
 function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   if (!update) return;
   // Update serverClocks *before* the move loop -- see the identical
@@ -163,6 +259,11 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   // future subscriber (a live-clock component that re-renders on each
   // update) would otherwise briefly see the previous update's values.
   const prevClocks = commitServerClocksEarly(update);
+
+  // Derive the human side from `gameFull`'s player ids before applying
+  // any moves in the same update, so if a mid-game gameFull carries
+  // existing moves, they land under the right controllers/POV.
+  applyDerivedControllers(update);
 
   const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);
   for (const uci of newMoves) {
@@ -209,7 +310,11 @@ function maybeSendHumanMove() {
 
 let listenersInstalled = false;
 
-function installListenersOnce() {
+/** Human-mode's per-game stream listeners (`lichess-game-stream` /
+ * `lichess-game-exit`). The *account* event stream is shared with
+ * `lichessBotStore` via `lichessEventBus` -- installed separately in
+ * `primeForNewSession`. */
+function installLichessGameListenersOnce() {
   if (listenersInstalled) return;
   listenersInstalled = true;
 
@@ -232,12 +337,86 @@ function installListenersOnce() {
 
 const NOT_CONNECTED = new Set<LichessStatus>(["idle", "error", "gameOver"]);
 
-export const useLichessStore = create<LichessStoreState>((set, get) => ({
+/** Fair-play precheck, defense-in-depth over the Rust guard. Any
+ * initiator (`seek`, `challengeUser`, `challengeAi`, `joinGameById`)
+ * runs this first so a BOT-account token produces the same clear error
+ * without a wasted HTTP round-trip. */
+function refuseIfBotAccount(): boolean {
+  const verified = useLichessStore.getState().verifiedAccount;
+  if (verified?.isBot) {
+    failLichess(
+      `the human slot's token belongs to a BOT account ("${verified.username}") -- put it in the bot slot instead`,
+    );
+    return true;
+  }
+  return false;
+}
+
+/** Places the store in the just-before-any-Lichess-call state that
+ * every initiator (seek, challenge, join-by-id) needs. Resets the board
+ * with a placeholder `{ w: "lichess", b: "lichess" }` -- moves stay
+ * locked (per CLAUDE.md's ordering rule) until `gameFull` derives the
+ * human's real side and `enterPlayMode` runs. */
+function primeForNewSession(): void {
+  installLichessGameListenersOnce();
+  installLichessEventBusOnce();
+  useGameStore.getState().startNewGame({ w: "lichess", b: "lichess" });
+  useLichessStore.setState({
+    status: "idle",
+    errorMessage: null,
+    lastSentUci: null,
+    gameId: null,
+    serverClocks: null,
+  });
+}
+
+/** Shared connect-to-a-game-id flow, called by both `joinGameById`
+ * (user paste) and `handleAccountEvent` (auto-connect on `gameStart`).
+ * The caller is responsible for `primeForNewSession` beforehand. */
+async function connectImpl(gameIdOrUrl: string): Promise<void> {
+  if (!NOT_CONNECTED.has(useLichessStore.getState().status)) return;
+  useLichessStore.setState({
+    status: "connecting",
+    errorMessage: null,
+    lastSentUci: null,
+    gameId: gameIdOrUrl,
+    serverClocks: null,
+  });
+  logDebug(`connecting: ${gameIdOrUrl}`);
+  try {
+    await invoke("lichess_stream_game", { gameIdOrUrl });
+    useLichessStore.setState({ status: "connected" });
+    logDebug("connected");
+    // Only unlock moves once the stream is actually confirmed connected --
+    // gameStore.startNewGame (called before this) resets the board but
+    // deliberately leaves moves locked until now, same as engineStore.
+    useGameStore.getState().enterPlayMode();
+  } catch (err) {
+    failLichess(String(err));
+  }
+}
+
+async function startAccountEventStreamOnce(): Promise<void> {
+  installLichessEventBusOnce();
+  // Idempotent server-side: hitting `/api/stream/event` while one is
+  // already open just returns a fresh stream. Log the error but don't
+  // fail the initiator -- the seek/challenge itself is what the user
+  // actually cares about; if the event stream doesn't come up, they
+  // can still connect manually by pasting the game id.
+  try {
+    await invoke("lichess_stream_events", { slot: HUMAN_SLOT });
+  } catch (err) {
+    logDebug(`event stream start failed: ${String(err)}`);
+  }
+}
+
+export const useLichessStore = create<LichessStoreState>((set) => ({
   hasToken: false,
   verifiedAccount: null,
   verifyError: null,
   gameId: null,
   status: "idle",
+  seekStatus: "idle",
   errorMessage: null,
   lastSentUci: null,
   serverClocks: null,
@@ -276,44 +455,119 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
     }
   },
 
-  connect: async (gameIdOrUrl) => {
-    // Re-entrancy guard, same reasoning as engineStore's startEngine: a
-    // duplicate call while a connect is already in flight would otherwise
-    // start a second stream task that immediately aborts the first one.
-    if (!NOT_CONNECTED.has(get().status)) return;
-
-    // Fair-play guard, mirrored on the frontend for a fast, clear error:
-    // Rust's `token_for_slot_verified` will also refuse a BOT account on
-    // the human slot, but running the check locally when the cached
-    // verify result already answers it avoids a needless HTTP round-trip
-    // just to produce the same error message.
-    const verified = get().verifiedAccount;
-    if (verified?.isBot) {
-      failLichess(
-        `the human slot's token belongs to a BOT account ("${verified.username}") -- put it in the bot slot instead`,
-      );
-      return;
-    }
-
-    installListenersOnce();
-    set({
-      status: "connecting",
-      errorMessage: null,
-      lastSentUci: null,
-      gameId: gameIdOrUrl,
-      serverClocks: null,
-    });
-    logDebug(`connecting: ${gameIdOrUrl}`);
+  seek: async ({ time, rated, color }) => {
+    if (refuseIfBotAccount()) return;
+    primeForNewSession();
+    await startAccountEventStreamOnce();
+    set({ seekStatus: "seeking" });
+    logDebug(`seek: ${time.minutes}+${time.increment} rated=${rated} color=${color}`);
     try {
-      await invoke("lichess_stream_game", { gameIdOrUrl });
-      set({ status: "connected" });
-      logDebug("connected");
-      // Only unlock moves once the stream is actually confirmed connected --
-      // gameStore.startNewGame (called before this) resets the board but
-      // deliberately leaves moves locked until now, same as engineStore.
-      useGameStore.getState().enterPlayMode();
+      await invoke("lichess_seek", {
+        minutes: time.minutes,
+        increment: time.increment,
+        rated,
+        color,
+      });
+      // Seek returns when the server closes the connection -- either
+      // matched (gameStart fires on the event stream, handleAccountEvent
+      // auto-connects) or aborted via stopSeek. Either way, we're no
+      // longer actively seeking here.
+      set({ seekStatus: "idle" });
+    } catch (err) {
+      set({ seekStatus: "idle" });
+      failLichess(String(err));
+    }
+  },
+
+  stopSeek: async () => {
+    logDebug("stop seek requested");
+    try {
+      await invoke("lichess_stop_seek");
+    } finally {
+      set({ seekStatus: "idle" });
+    }
+  },
+
+  challengeUser: async ({ username, time, rated, color }) => {
+    if (refuseIfBotAccount()) return;
+    primeForNewSession();
+    await startAccountEventStreamOnce();
+    logDebug(`challenge user: ${username} ${time.minutes}+${time.increment} rated=${rated}`);
+    try {
+      await invoke("lichess_challenge_user", {
+        username,
+        minutes: time.minutes,
+        increment: time.increment,
+        rated,
+        color,
+      });
     } catch (err) {
       failLichess(String(err));
+    }
+  },
+
+  challengeAi: async ({ level, time, color }) => {
+    if (refuseIfBotAccount()) return;
+    primeForNewSession();
+    await startAccountEventStreamOnce();
+    logDebug(`challenge AI level ${level}: ${time.minutes}+${time.increment} color=${color}`);
+    try {
+      await invoke("lichess_challenge_ai", {
+        level,
+        minutes: time.minutes,
+        increment: time.increment,
+        color,
+      });
+    } catch (err) {
+      failLichess(String(err));
+    }
+  },
+
+  joinGameById: async (gameIdOrUrl) => {
+    if (refuseIfBotAccount()) return;
+    primeForNewSession();
+    await startAccountEventStreamOnce();
+    await connectImpl(gameIdOrUrl);
+  },
+
+  handleAccountEvent: (event) => {
+    switch (event.type) {
+      case "gameStart":
+        logDebug(`gameStart: ${event.gameId} (bot side: ${event.botColor})`);
+        // Auto-connect. `primeForNewSession` was already called by the
+        // initiator (seek/challenge/etc); the game stream just needs to
+        // open. Even if the user hits `joinGameById` mid-seek and then
+        // Lichess later fires a gameStart for a different id, the guard
+        // inside `connectImpl` no-ops (status is "connected" already).
+        void connectImpl(event.gameId);
+        // Seek matched (or challenge accepted) -> no longer seeking.
+        useLichessStore.setState({ seekStatus: "idle" });
+        break;
+      case "challenge":
+        // Outbound challenge that Lichess is confirming to us, or an
+        // inbound challenge from another user. Human mode doesn't
+        // auto-accept -- surfaced in debug.log only for now.
+        logDebug(`challenge event: ${event.challengeId} from ${event.challenger?.id ?? "?"}`);
+        break;
+      case "challengeCanceled":
+        logDebug(`challenge canceled: ${event.challengeId}`);
+        break;
+      case "challengeDeclined":
+        logDebug(
+          `challenge declined: ${event.challengeId}${event.reason ? ` (${event.reason})` : ""}`,
+        );
+        break;
+      case "gameFinish":
+        logDebug(`gameFinish: ${event.gameId}`);
+        break;
+    }
+  },
+
+  handleEventStreamExit: (reason) => {
+    if (useLichessStore.getState().status === "connected") {
+      failLichess(reason);
+    } else {
+      logDebug(`event stream ended: ${reason}`);
     }
   },
 
@@ -321,8 +575,16 @@ export const useLichessStore = create<LichessStoreState>((set, get) => ({
     logDebug("disconnect requested");
     try {
       await invoke("lichess_stop_game");
+      await invoke("lichess_stop_events").catch(() => {});
+      await invoke("lichess_stop_seek").catch(() => {});
     } finally {
-      set({ status: "idle", errorMessage: null, gameId: null, serverClocks: null });
+      set({
+        status: "idle",
+        seekStatus: "idle",
+        errorMessage: null,
+        gameId: null,
+        serverClocks: null,
+      });
       useGameStore.getState().exitPlayMode();
     }
   },

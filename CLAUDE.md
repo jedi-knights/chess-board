@@ -250,6 +250,39 @@ this file and the human-facing docs.
   captured pre-update clock snapshot. Multi-move catch-ups on reconnect and no-clock
   games (correspondence, unlimited) leave the ply un-annotated -- MoveLog shows "—"
   in those cases, honestly, rather than fabricating a value.
+- **The Lichess account event stream is dispatched by a mode-aware bus, not by whichever
+  store happens to be listening.** `src/lib/lichessEventBus.ts` installs the raw
+  `lichess-event-stream` / `lichess-event-exit` listeners exactly once and routes each
+  event to `useLichessStore.handleAccountEvent` when the current game-mode preset is
+  `human-vs-lichess`, or `useLichessBotStore.handleAccountEvent` when it's
+  `engine-vs-lichess`. The two modes never run at once (menu lock -- see the earlier
+  "Live-session menu lock" bullet), so a single-slot Rust connection is enough. Do not
+  reintroduce a per-store `installListenersOnce` for the account event stream -- that's
+  what put PR 4's routing in a bad place: the second mode would silently miss its
+  gameStart events.
+- **Human mode derives the human's color from `gameFull`'s `white.id` / `black.id`
+  compared against `verifiedAccount.id`, not from a picker.** Every human-mode
+  initiator (`seek`, `challengeUser`, `challengeAi`, `joinGameById`) primes the board
+  with a placeholder `{ w: "lichess", b: "lichess" }` first (so moves stay locked until
+  the connection is confirmed, per CLAUDE.md's startNewGame ordering rule); when
+  `gameFull` arrives, `applyDerivedControllers` calls `gameStore.setControllers` to
+  promote the matching side to `"human"` and set POV. Spectator connections (neither id
+  matches) leave the placeholder in place -- moves stay locked, and the reason is
+  logged to `debug.log`.
+- **`gameStore.setControllers(controllers, pov?)` is the *only* narrow way to change
+  who controls a side mid-game.** Deliberately does not touch `plies`/`ply`/`mode` --
+  it exists specifically so `applyDerivedControllers` can promote a placeholder-lichess
+  side to `human` once `gameFull` arrives, without erasing any moves that came in
+  the same update. Do not use `setControllers` for "start a new game" -- that's
+  `startNewGame`'s job and mixing the two undoes the placeholder-first ordering.
+- **Board API real-time limits live in Rust, mirrored to the UI.** `MAX_TIME_MINUTES`
+  (180), `MAX_INCREMENT_SECONDS` (60), AI level 1-8. Every seek/challenge/AI command
+  validates before hitting Lichess, so a bad UI value produces a clear error, not a
+  400 the user has to interpret.
+- **`ChallengeColor` is a serde enum, same shape as `TokenSlot` /
+  `LichessDeclineReason`.** `"random" | "white" | "black"` -- anything else is
+  rejected at deserialize time before it can reach a request URL. `AI` challenges
+  are always casual (Lichess policy); every other new endpoint accepts `rated`.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via

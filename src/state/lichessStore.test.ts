@@ -48,8 +48,10 @@ beforeEach(() => {
     verifyError: null,
     gameId: null,
     status: "idle",
+    seekStatus: "idle",
     errorMessage: null,
     lastSentUci: null,
+    serverClocks: null,
   });
 });
 
@@ -162,17 +164,10 @@ describe("verifyAccount", () => {
   });
 });
 
-describe("connect", () => {
-  it("re-entrancy guard: a second call while one is already connecting is a no-op", () => {
-    void useLichessStore.getState().connect("game-1");
-    expect(useLichessStore.getState().status).toBe("connecting");
-    void useLichessStore.getState().connect("game-2");
-    expect(useLichessStore.getState().gameId).toBe("game-1");
-  });
-
+describe("joinGameById", () => {
   it("success path: status becomes connected and gameStore unlocks moves", async () => {
     useGameStore.getState().exitPlayMode();
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
     expect(useLichessStore.getState().status).toBe("connected");
     expect(useGameStore.getState().mode).toBe("play");
   });
@@ -183,7 +178,7 @@ describe("connect", () => {
         ? Promise.reject(new Error("network down"))
         : Promise.resolve(undefined),
     );
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
     const state = useLichessStore.getState();
     expect(state.status).toBe("error");
     expect(state.errorMessage).toContain("network down");
@@ -196,30 +191,194 @@ describe("connect", () => {
     useLichessStore.setState({
       verifiedAccount: { id: "botty", username: "botty", isBot: true },
     });
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
     const state = useLichessStore.getState();
     expect(state.status).toBe("error");
     expect(state.errorMessage).toContain("BOT account");
     expect(state.errorMessage).toContain("bot slot");
-    // Never even called the stream command.
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_stream_game", expect.anything());
+  });
+
+  it("resets controllers to a placeholder ({ w: lichess, b: lichess }) until gameFull arrives", async () => {
+    useGameStore.getState().startNewGame({ w: "human", b: "engine" });
+    await useLichessStore.getState().joinGameById("game-1");
+    // Board is primed with the placeholder -- both sides Lichess-controlled.
+    // No moves can be made through selectSquare until gameFull promotes
+    // one side to "human". Verified via the mode/controllers pair rather
+    // than the mode alone (mode is "play" because connect succeeded).
+    expect(useGameStore.getState().controllers).toEqual({ w: "lichess", b: "lichess" });
+  });
+});
+
+describe("seek", () => {
+  it("marks seekStatus 'seeking' during the request and back to 'idle' on completion", async () => {
+    let resolveSeek!: (v: undefined) => void;
+    mockedInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "lichess_seek") return new Promise<undefined>((r) => { resolveSeek = r; });
+      return Promise.resolve(undefined);
+    });
+    const seekPromise = useLichessStore.getState().seek({
+      time: { minutes: 5, increment: 3 },
+      rated: false,
+      color: "random",
+    });
+    // Give the microtasks queued before `invoke("lichess_seek")` a chance
+    // to run so seekStatus flips to "seeking" before we peek.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useLichessStore.getState().seekStatus).toBe("seeking");
+    resolveSeek(undefined);
+    await seekPromise;
+    expect(useLichessStore.getState().seekStatus).toBe("idle");
+  });
+
+  it("refuses on a BOT account without invoking lichess_seek", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "b", username: "b", isBot: true },
+    });
+    await useLichessStore.getState().seek({
+      time: { minutes: 5, increment: 3 },
+      rated: false,
+      color: "random",
+    });
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_seek", expect.anything());
+    expect(useLichessStore.getState().status).toBe("error");
+  });
+
+  it("stopSeek invokes the Rust cancel and resets seekStatus", async () => {
+    useLichessStore.setState({ seekStatus: "seeking" });
+    await useLichessStore.getState().stopSeek();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_stop_seek");
+    expect(useLichessStore.getState().seekStatus).toBe("idle");
+  });
+});
+
+describe("challengeUser / challengeAi", () => {
+  it("challengeUser forwards the shape Rust expects", async () => {
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().challengeUser({
+      username: "alice",
+      time: { minutes: 5, increment: 3 },
+      rated: true,
+      color: "white",
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_user", {
+      username: "alice",
+      minutes: 5,
+      increment: 3,
+      rated: true,
+      color: "white",
+    });
+  });
+
+  it("challengeAi forwards level and time-control fields", async () => {
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().challengeAi({
+      level: 3,
+      time: { minutes: 10, increment: 5 },
+      color: "black",
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_ai", {
+      level: 3,
+      minutes: 10,
+      increment: 5,
+      color: "black",
+    });
+  });
+
+  it("both refuse on a BOT account", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "b", username: "b", isBot: true },
+    });
+    await useLichessStore.getState().challengeUser({
+      username: "alice",
+      time: { minutes: 5, increment: 3 },
+      rated: false,
+      color: "random",
+    });
+    await useLichessStore.getState().challengeAi({
+      level: 1,
+      time: { minutes: 5, increment: 3 },
+      color: "random",
+    });
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_user", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_ai", expect.anything());
+  });
+});
+
+describe("handleAccountEvent", () => {
+  it("gameStart auto-connects the game stream", async () => {
+    useLichessStore.getState().handleAccountEvent({
+      type: "gameStart",
+      gameId: "abcd1234",
+      botColor: "w",
+    });
+    // Auto-connect fires asynchronously.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_stream_game", {
+      gameIdOrUrl: "abcd1234",
+    });
+  });
+
+  it("gameStart clears seekStatus back to idle (seek was matched)", async () => {
+    useLichessStore.setState({ seekStatus: "seeking" });
+    useLichessStore.getState().handleAccountEvent({
+      type: "gameStart",
+      gameId: "abcd1234",
+      botColor: "b",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useLichessStore.getState().seekStatus).toBe("idle");
+  });
+
+  it("challenge* / gameFinish events are log-only, not connect triggers", async () => {
+    mockedInvoke.mockClear();
+    useLichessStore.getState().handleAccountEvent({
+      type: "challenge",
+      challengeId: "chal1234",
+      challenger: { id: "alice", name: "Alice", title: null },
+      destUser: null,
+      variant: "standard",
+      speed: "blitz",
+      rated: false,
+      initialFen: null,
+      timeControl: {
+        type: "clock",
+        limitSeconds: 300,
+        incrementSeconds: 3,
+        daysPerTurn: null,
+      },
+    });
+    useLichessStore.getState().handleAccountEvent({
+      type: "gameFinish",
+      gameId: "abcd1234",
+    });
+    await new Promise((r) => setTimeout(r, 0));
     expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_stream_game", expect.anything());
   });
 });
 
 describe("disconnect", () => {
   it("resets to idle, clears the game id, and exits play mode", async () => {
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
     await useLichessStore.getState().disconnect();
     const state = useLichessStore.getState();
     expect(state.status).toBe("idle");
     expect(state.gameId).toBeNull();
     expect(useGameStore.getState().mode).toBe("replay");
   });
+
+  it("also stops any in-flight event stream and seek", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    mockedInvoke.mockClear();
+    await useLichessStore.getState().disconnect();
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_stop_events");
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_stop_seek");
+  });
 });
 
 describe("lichess-game-stream listener", () => {
   it("applies incoming moves not yet reflected locally", async () => {
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
 
     emit(
       "lichess-game-stream",
@@ -229,8 +388,72 @@ describe("lichess-game-stream listener", () => {
     expect(useGameStore.getState().plies.map((p) => p.uci)).toEqual(["e2e4"]);
   });
 
+  it("derives human-side controllers from gameFull's white/black ids", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "me", username: "me", isBot: false },
+    });
+    await useLichessStore.getState().joinGameById("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({
+        type: "gameFull",
+        id: "game-1",
+        white: { id: "me", name: "Me" },
+        black: { id: "opp", name: "Opp" },
+        state: { type: "gameState", moves: "", status: "started" },
+      }),
+    );
+
+    expect(useGameStore.getState().controllers).toEqual({ w: "human", b: "lichess" });
+    expect(useGameStore.getState().pov).toBe("w");
+  });
+
+  it("derives human plays black when the verified id matches black", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "me", username: "me", isBot: false },
+    });
+    await useLichessStore.getState().joinGameById("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({
+        type: "gameFull",
+        id: "game-1",
+        white: { id: "opp", name: "Opp" },
+        black: { id: "me", name: "Me" },
+        state: { type: "gameState", moves: "", status: "started" },
+      }),
+    );
+
+    expect(useGameStore.getState().controllers).toEqual({ w: "lichess", b: "human" });
+    expect(useGameStore.getState().pov).toBe("b");
+  });
+
+  it("leaves the placeholder controllers when neither white nor black matches the verified account (spectator)", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "me", username: "me", isBot: false },
+    });
+    await useLichessStore.getState().joinGameById("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({
+        type: "gameFull",
+        id: "game-1",
+        white: { id: "alice", name: "Alice" },
+        black: { id: "bob", name: "Bob" },
+        state: { type: "gameState", moves: "", status: "started" },
+      }),
+    );
+
+    // Neither side gets promoted to human -- moves stay locked, matching
+    // Lichess Board API's spectator-connection semantics.
+    expect(useGameStore.getState().controllers).toEqual({ w: "lichess", b: "lichess" });
+  });
+
   it("a terminal status ends the game and stops it backend-side", async () => {
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
 
     emit(
       "lichess-game-stream",
@@ -243,8 +466,7 @@ describe("lichess-game-stream listener", () => {
   });
 
   it("an illegal move from Lichess fails the connection", async () => {
-    // From the starting position, e2e5 is not a legal pawn move.
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
 
     emit(
       "lichess-game-stream",
@@ -259,7 +481,7 @@ describe("lichess-game-stream listener", () => {
 
 describe("lichess-game-exit listener", () => {
   it("fails the connection when it was actually connected", async () => {
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
 
     emit("lichess-game-exit", "stream closed by server");
 
@@ -269,7 +491,7 @@ describe("lichess-game-exit listener", () => {
   });
 
   it("is a no-op when not currently connected (e.g. after a deliberate disconnect)", async () => {
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
     await useLichessStore.getState().disconnect();
 
     emit("lichess-game-exit", "late, stale exit event");
@@ -279,10 +501,9 @@ describe("lichess-game-exit listener", () => {
 });
 
 describe("maybeSendHumanMove (via gameStore subscription)", () => {
-  it("sends the human's own move to Lichess once connected", async () => {
-    useGameStore.getState().startNewGame({ w: "human", b: "lichess" });
-    useGameStore.getState().exitPlayMode();
-    await useLichessStore.getState().connect("game-1");
+  it("sends the human's own move to Lichess once connected and controllers are set", async () => {
+    await useLichessStore.getState().joinGameById("game-1");
+    useGameStore.getState().setControllers({ w: "human", b: "lichess" }, "w");
     mockedInvoke.mockClear();
 
     useGameStore.getState().attemptMove("e2", "e4");
@@ -295,9 +516,8 @@ describe("maybeSendHumanMove (via gameStore subscription)", () => {
   });
 
   it("fails the connection if sending the move itself rejects", async () => {
-    useGameStore.getState().startNewGame({ w: "human", b: "lichess" });
-    useGameStore.getState().exitPlayMode();
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
+    useGameStore.getState().setControllers({ w: "human", b: "lichess" }, "w");
     mockedInvoke.mockImplementation((cmd: string) =>
       cmd === "lichess_make_move"
         ? Promise.reject(new Error("lichess unreachable"))
@@ -314,9 +534,8 @@ describe("maybeSendHumanMove (via gameStore subscription)", () => {
   });
 
   it("does not resend a move that was just received from the opponent", async () => {
-    useGameStore.getState().startNewGame({ w: "lichess", b: "human" });
-    useGameStore.getState().exitPlayMode();
-    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().joinGameById("game-1");
+    useGameStore.getState().setControllers({ w: "lichess", b: "human" }, "b");
     mockedInvoke.mockClear();
 
     // White's move arrives via the stream, not from this human -- the

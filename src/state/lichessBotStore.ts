@@ -5,13 +5,14 @@ import { persist } from "zustand/middleware";
 import {
   decideChallenge,
   isTerminalStatus,
-  parseLichessAccountEvent,
   parseLichessLine,
+  type LichessAccountEvent,
   type LichessAccountInfo,
   type LichessChallengeEvent,
   type LichessDeclineReason,
   type LichessMoveUpdate,
 } from "../lib/lichess";
+import { installLichessEventBusOnce } from "../lib/lichessEventBus";
 import type { GoOptions } from "../lib/uci";
 import { ENGINE_NOT_RUNNING, engineStoreForSide } from "./engineStore";
 import { useGameStore } from "./gameStore";
@@ -80,6 +81,14 @@ interface LichessBotStoreState {
   upgradeToBotAccount: () => Promise<boolean>;
   startListening: () => Promise<void>;
   stopListening: () => Promise<void>;
+  /** Called by `lichessEventBus` for every event that arrives on the
+   * account event stream while `engine-vs-lichess` is the active mode.
+   * The bus, not this store, owns the raw Tauri listener. */
+  handleAccountEvent: (event: LichessAccountEvent) => void;
+  /** Called by `lichessEventBus` when the account event stream itself
+   * ends (server closed, network drop). Only surfaces as a failure when
+   * we were actually using it. */
+  handleEventStreamExit: (reason: string) => void;
 }
 
 /** Fire-and-forget append to the on-disk debug log, same convention as
@@ -390,49 +399,50 @@ function maybeSendEngineMove() {
   );
 }
 
+/** Dispatched to by `lichessEventBus.dispatch` when the mode preset is
+ * `engine-vs-lichess`. Split into a store-level action rather than a
+ * module-local closure so tests can drive the same code path without
+ * touching the raw Tauri listener seam. */
+function routeAccountEvent(event: LichessAccountEvent) {
+  switch (event.type) {
+    case "challenge":
+      void handleChallenge(event);
+      break;
+    case "gameStart":
+      void handleGameStart(event.gameId, event.botColor);
+      break;
+    case "challengeCanceled":
+      logDebug(`challenge ${event.challengeId} canceled by challenger`);
+      break;
+    case "challengeDeclined":
+      // The bot never issues outgoing challenges today, so this
+      // arrives only when Lichess echoes back our own decline. Log
+      // it for the timeline, but do nothing -- the decline was our
+      // own action.
+      logDebug(
+        `challenge ${event.challengeId} declined${event.reason ? ` (${event.reason})` : ""}`,
+      );
+      break;
+    case "gameFinish":
+      // Redundant with the terminal status inside the game stream,
+      // which also flips status to "listening". Kept as a defense-
+      // in-depth log line: if the game stream missed the terminal
+      // status for any reason, this confirms the game ended.
+      logDebug(`gameFinish event for ${event.gameId}`);
+      break;
+  }
+}
+
 let listenersInstalled = false;
 
-function installListenersOnce() {
+/** The bot-mode game stream (`lichess-bot-game-stream` /
+ * `lichess-bot-game-exit`) is unique to this store, so its raw listeners
+ * still live here. The *account* event stream is shared with
+ * `lichessStore` via `lichessEventBus` -- both routes converge on
+ * `handleAccountEvent` below. */
+function installBotGameStreamListenersOnce() {
   if (listenersInstalled) return;
   listenersInstalled = true;
-
-  void listen<string>("lichess-event-stream", (event) => {
-    const parsed = parseLichessAccountEvent(event.payload);
-    if (!parsed) return;
-    switch (parsed.type) {
-      case "challenge":
-        void handleChallenge(parsed);
-        break;
-      case "gameStart":
-        void handleGameStart(parsed.gameId, parsed.botColor);
-        break;
-      case "challengeCanceled":
-        logDebug(`challenge ${parsed.challengeId} canceled by challenger`);
-        break;
-      case "challengeDeclined":
-        // The bot never issues outgoing challenges today, so this
-        // arrives only when Lichess echoes back our own decline. Log
-        // it for the timeline, but do nothing -- the decline was our
-        // own action.
-        logDebug(
-          `challenge ${parsed.challengeId} declined${parsed.reason ? ` (${parsed.reason})` : ""}`,
-        );
-        break;
-      case "gameFinish":
-        // Redundant with the terminal status inside the game stream,
-        // which also flips status to "listening". Kept as a defense-
-        // in-depth log line: if the game stream missed the terminal
-        // status for any reason, this confirms the game ended.
-        logDebug(`gameFinish event for ${parsed.gameId}`);
-        break;
-    }
-  });
-
-  void listen<string>("lichess-event-exit", (event) => {
-    if (useLichessBotStore.getState().status !== "idle") {
-      failBot(event.payload);
-    }
-  });
 
   void listen<string>("lichess-bot-game-stream", (event) => {
     applyIncomingBotMoves(parseLichessLine(event.payload));
@@ -536,13 +546,22 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
           return;
         }
 
-        installListenersOnce();
+        installBotGameStreamListenersOnce();
+        installLichessEventBusOnce();
         set({ status: "listening", errorMessage: null, activeGameId: null, lastSentUci: null });
         logDebug("listening for challenges");
         try {
           await invoke("lichess_stream_events", { slot: BOT_SLOT });
         } catch (err) {
           failBot(String(err));
+        }
+      },
+
+      handleAccountEvent: (event) => routeAccountEvent(event),
+
+      handleEventStreamExit: (reason) => {
+        if (useLichessBotStore.getState().status !== "idle") {
+          failBot(reason);
         }
       },
 

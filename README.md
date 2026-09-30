@@ -85,7 +85,14 @@ This opens the app window.
 
 **To play against an engine:** click **Choose engine binary…** and pick your compiled UCI engine (chess-board remembers this choice across restarts, so you only need to do this once per engine), choose **Play as** White or Black, optionally adjust **Movetime (ms)**, then **Start game**. Click one of your pieces — its legal destination squares highlight — then click a highlighted square to move. The engine replies on its own; watch the **Status** line for its depth/score while it's thinking.
 
-**To play on Lichess** (Board API): switch to **Play on Lichess** in the View menu's Game Mode group, paste a Lichess personal-access token with the `board:play` scope into the **human slot** field, then paste a game id or URL and click **Connect**. The token is stored in the OS keychain, never in the app. chess-board verifies the token against `GET /api/account` — a BOT-titled account is refused here (put it in the Bot slot below instead).
+**To play on Lichess** (Board API): switch to **Play on Lichess** in the View menu's Game Mode group, paste a Lichess personal-access token with the `board:play` scope into the **human slot** field, then pick one of four ways to start a game:
+
+- **Seek an opponent** — posts an open seek to Lichess's real-time lobby; auto-connects when someone accepts.
+- **Challenge a user** — challenge a specific Lichess account by name.
+- **Play the Lichess AI** — challenge Stockfish at level 1–8.
+- **Join a game by id** — fallback for when a game or challenge already exists on lichess.org and you want to play it here.
+
+Which color you play is derived from the game's own white/black ids compared against your verified account — no manual "Play as" picker. The token is stored in the OS keychain, never in the app. chess-board verifies the token against `GET /api/account` — a BOT-titled account is refused here (put it in the Bot slot below instead).
 
 **To bridge a UCI engine to Lichess** (Bot API): switch to **Engine vs Lichess** in the same menu, paste a token from a Lichess account you have dedicated to running engines into the **bot slot** field. If that account is not yet a BOT, chess-board shows an **Upgrade to Bot account** panel — the upgrade is irreversible on Lichess's side. Pick your engine binary, click **Start listening for challenges**, and any challenge that arrives is auto-accepted and played by the engine. The two token slots are entirely separate: a token in the human slot cannot post through the Bot API and vice versa.
 

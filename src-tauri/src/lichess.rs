@@ -378,6 +378,67 @@ fn validate_uci_move(mv: &str) -> Result<(), String> {
     }
 }
 
+/// Which color the caller of a seek / challenge wants to play as. Lichess
+/// accepts these three exact strings; anything else is a 400. Serde tag
+/// validated at deserialize time, same shape as `TokenSlot` /
+/// `LichessDeclineReason` -- a hostile frontend string can't reach the
+/// request URL.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChallengeColor {
+    Random,
+    White,
+    Black,
+}
+
+impl ChallengeColor {
+    fn as_wire(self) -> &'static str {
+        match self {
+            ChallengeColor::Random => "random",
+            ChallengeColor::White => "white",
+            ChallengeColor::Black => "black",
+        }
+    }
+}
+
+/// Lichess Board API real-time seek limits (see the API reference at
+/// <https://lichess.org/api#tag/Board/operation/apiBoardSeek>): base time
+/// 0-180 minutes, increment 0-60 seconds. Enforced here so a bad UI
+/// value can't produce a 400 the user has to interpret.
+const MAX_TIME_MINUTES: u32 = 180;
+const MAX_INCREMENT_SECONDS: u32 = 60;
+
+fn validate_time_minutes(minutes: u32) -> Result<(), String> {
+    if minutes > MAX_TIME_MINUTES {
+        Err(format!(
+            "time must be at most {MAX_TIME_MINUTES} minutes (got {minutes})"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_increment_seconds(increment: u32) -> Result<(), String> {
+    if increment > MAX_INCREMENT_SECONDS {
+        Err(format!(
+            "increment must be at most {MAX_INCREMENT_SECONDS} seconds (got {increment})"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Lichess AI levels are 1-8 (Stockfish strength). Anything else is a
+/// 400; kept as a `u8` range check rather than an enum since the level
+/// varies over a small integer range that isn't meaningfully typed.
+fn validate_ai_level(level: u8) -> Result<(), String> {
+    if !(1..=8).contains(&level) {
+        Err(format!("AI level must be 1-8 (got {level})"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Validates a Lichess username before it's spliced into a request URL --
 /// same trust-boundary reasoning as `parse_game_id`/`validate_uci_move`.
 /// Lichess usernames are 2-30 characters, start with a letter, and contain
@@ -943,6 +1004,157 @@ pub async fn lichess_challenge_bot(
     Ok(())
 }
 
+/// Human-mode counterpart to `lichess_challenge_bot`: the human's *own*
+/// account challenges another user (bot or human). Rated is a param
+/// here rather than hardcoded false, since a human account legitimately
+/// plays rated games -- the "rated affects ratings" concern that made
+/// `lichess_challenge_bot` unrated-only doesn't apply here (a human is
+/// already the one whose rating moves).
+#[tauri::command]
+pub async fn lichess_challenge_user(
+    account_cache: State<'_, SharedAccountCache>,
+    username: String,
+    minutes: u32,
+    increment: u32,
+    rated: bool,
+    color: ChallengeColor,
+) -> Result<(), String> {
+    validate_username(&username)?;
+    validate_time_minutes(minutes)?;
+    validate_increment_seconds(increment)?;
+    let (token, _) = token_for_slot_verified(TokenSlot::Human, &account_cache).await?;
+    let client = new_client()?;
+    let url = format!("https://lichess.org/api/challenge/{username}");
+    let clock_limit = (minutes * 60).to_string();
+    let clock_increment = increment.to_string();
+    let response = client
+        .post(&url)
+        .bearer_auth(&token)
+        .form(&[
+            ("variant", "standard"),
+            ("rated", if rated { "true" } else { "false" }),
+            ("color", color.as_wire()),
+            ("clock.limit", clock_limit.as_str()),
+            ("clock.increment", clock_increment.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "lichess rejected the challenge to {username}: {status} {body}"
+        ));
+    }
+    Ok(())
+}
+
+/// Challenges Lichess's stock Stockfish AI at the given level (1-8).
+/// AI challenges are always casual (a Lichess policy, not this app's),
+/// so no `rated` parameter. The AI accepts immediately, and the account
+/// event stream fires `gameStart` for the frontend to auto-connect.
+#[tauri::command]
+pub async fn lichess_challenge_ai(
+    account_cache: State<'_, SharedAccountCache>,
+    level: u8,
+    minutes: u32,
+    increment: u32,
+    color: ChallengeColor,
+) -> Result<(), String> {
+    validate_ai_level(level)?;
+    validate_time_minutes(minutes)?;
+    validate_increment_seconds(increment)?;
+    let (token, _) = token_for_slot_verified(TokenSlot::Human, &account_cache).await?;
+    let client = new_client()?;
+    let level_str = level.to_string();
+    let clock_limit = (minutes * 60).to_string();
+    let clock_increment = increment.to_string();
+    let response = client
+        .post("https://lichess.org/api/challenge/ai")
+        .bearer_auth(&token)
+        .form(&[
+            ("variant", "standard"),
+            ("color", color.as_wire()),
+            ("level", level_str.as_str()),
+            ("clock.limit", clock_limit.as_str()),
+            ("clock.increment", clock_increment.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("lichess rejected the AI challenge: {status} {body}"));
+    }
+    Ok(())
+}
+
+/// Board API seek. Unlike a challenge, this keeps the HTTP request open
+/// on the server side until a match is found (or the client cancels).
+/// The `LichessSeekConnection` slot exists so `lichess_stop_seek` can
+/// abort it independently of any subsequent game stream -- otherwise a
+/// user hitting "Cancel seek" would tear down whatever stream happened
+/// to occupy the shared `LichessConnection` slot.
+///
+/// When a match is made, Lichess emits `gameStart` on the account event
+/// stream (which the frontend event bus routes to
+/// `lichessStore.handleAccountEvent`). This task then naturally ends as
+/// the server closes the seek connection.
+pub struct LichessSeekConnection(pub SharedLichessState);
+
+#[tauri::command]
+pub async fn lichess_seek(
+    state: State<'_, LichessSeekConnection>,
+    account_cache: State<'_, SharedAccountCache>,
+    minutes: u32,
+    increment: u32,
+    rated: bool,
+    color: ChallengeColor,
+) -> Result<(), String> {
+    validate_time_minutes(minutes)?;
+    validate_increment_seconds(increment)?;
+    let (token, _) = token_for_slot_verified(TokenSlot::Human, &account_cache).await?;
+    let shared = state.0.clone();
+    stop_stream_locked(&shared)?;
+
+    let client = new_client()?;
+    let time_str = minutes.to_string();
+    let increment_str = increment.to_string();
+    let task = tokio::spawn(async move {
+        let response = client
+            .post("https://lichess.org/api/board/seek")
+            .bearer_auth(&token)
+            .form(&[
+                ("variant", "standard"),
+                ("rated", if rated { "true" } else { "false" }),
+                ("color", color.as_wire()),
+                ("time", time_str.as_str()),
+                ("increment", increment_str.as_str()),
+            ])
+            .send()
+            .await;
+        // The response body is empty on match; the connection stays open
+        // until then. Read the body to hold the request in flight; when
+        // the task is aborted (Cancel seek) or the server closes (matched),
+        // this returns and the task ends. Errors here are informational --
+        // the account event stream is the source of truth for gameStart.
+        if let Ok(response) = response {
+            let _ = response.bytes().await;
+        }
+    });
+    lock(&shared)?.stream_task = Some(task);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn lichess_stop_seek(state: State<'_, LichessSeekConnection>) -> Result<(), String> {
+    stop_stream_locked(&state.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1221,6 +1433,78 @@ mod tests {
             let parsed: LichessDeclineReason = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, reason);
         }
+    }
+
+    #[test]
+    fn challenge_color_deserializes_from_the_wire_tags_lichess_accepts() {
+        assert_eq!(
+            serde_json::from_str::<ChallengeColor>("\"random\"").unwrap(),
+            ChallengeColor::Random,
+        );
+        assert_eq!(
+            serde_json::from_str::<ChallengeColor>("\"white\"").unwrap(),
+            ChallengeColor::White,
+        );
+        assert_eq!(
+            serde_json::from_str::<ChallengeColor>("\"black\"").unwrap(),
+            ChallengeColor::Black,
+        );
+    }
+
+    #[test]
+    fn challenge_color_rejects_anything_else() {
+        assert!(serde_json::from_str::<ChallengeColor>("\"gray\"").is_err());
+        assert!(serde_json::from_str::<ChallengeColor>("null").is_err());
+    }
+
+    #[test]
+    fn challenge_color_wire_string_roundtrips_through_deserialize() {
+        for color in [ChallengeColor::Random, ChallengeColor::White, ChallengeColor::Black] {
+            let json = format!("\"{}\"", color.as_wire());
+            let parsed: ChallengeColor = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, color);
+        }
+    }
+
+    #[test]
+    fn validate_time_minutes_accepts_the_range_lichess_accepts() {
+        assert!(validate_time_minutes(0).is_ok());
+        assert!(validate_time_minutes(5).is_ok());
+        assert!(validate_time_minutes(180).is_ok());
+    }
+
+    #[test]
+    fn validate_time_minutes_rejects_above_the_upper_bound() {
+        // 181 is 1 above Lichess's cap -- must fail here, not at the API.
+        assert!(validate_time_minutes(181).is_err());
+        assert!(validate_time_minutes(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn validate_increment_seconds_accepts_the_range_lichess_accepts() {
+        assert!(validate_increment_seconds(0).is_ok());
+        assert!(validate_increment_seconds(30).is_ok());
+        assert!(validate_increment_seconds(60).is_ok());
+    }
+
+    #[test]
+    fn validate_increment_seconds_rejects_above_the_upper_bound() {
+        assert!(validate_increment_seconds(61).is_err());
+        assert!(validate_increment_seconds(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn validate_ai_level_accepts_1_through_8() {
+        for level in 1u8..=8 {
+            assert!(validate_ai_level(level).is_ok(), "level {level} should pass");
+        }
+    }
+
+    #[test]
+    fn validate_ai_level_rejects_out_of_range() {
+        assert!(validate_ai_level(0).is_err());
+        assert!(validate_ai_level(9).is_err());
+        assert!(validate_ai_level(u8::MAX).is_err());
     }
 
     #[test]
