@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
+import { OrthographicCamera } from "three";
 import { fenToPieces } from "../lib/chessRules";
 import { squareName, squareToPosition } from "../lib/boardGeometry";
 import { getBoardPalette, type BoardPalette } from "../lib/boardPalettes";
@@ -55,6 +56,12 @@ function BoardSquares({ palette }: { palette: BoardPalette }) {
   return <>{squares}</>;
 }
 
+// The board's outer edge sits at world ±4 (see boardGeometry.ts's ±3.5
+// square centers plus half a square) -- 8 world units per side. A little
+// over that as the target fit size leaves a small margin instead of
+// clipping the outermost squares against the canvas edge.
+const BOARD_VIEW_UNITS = 8.4;
+
 /**
  * Points the default camera at the board center on mount / camera-mode
  * change, and orients it so `pov`'s side renders at the bottom of the
@@ -62,6 +69,14 @@ function BoardSquares({ palette }: { palette: BoardPalette }) {
  * near-degenerate case for `lookAt`'s default up-vector disambiguation --
  * an explicit horizontal `up` is what actually decides which rank ends up
  * at the bottom of the screen, not the camera's position.
+ *
+ * Also keeps the 2D orthographic camera's `zoom` fitted to the *current*
+ * canvas size rather than a fixed constant. r3f's default orthographic
+ * frustum is sized directly in canvas pixels (1 world unit = 1 pixel at
+ * zoom 1), so a fixed zoom tuned for one window size leaves an
+ * ever-larger unused background margin as the window (and therefore the
+ * canvas) grows -- this recomputes zoom on every canvas resize so the
+ * board always fills the smaller of the canvas's two dimensions.
  */
 function LookAtBoardCenter({
   cameraMode,
@@ -70,16 +85,19 @@ function LookAtBoardCenter({
   cameraMode: CameraMode;
   pov: "w" | "b";
 }) {
-  const { camera } = useThree();
+  const { camera, size } = useThree();
   useLayoutEffect(() => {
     if (cameraMode === "2d") {
       camera.up.set(0, 0, pov === "w" ? 1 : -1);
+      if (camera instanceof OrthographicCamera) {
+        camera.zoom = Math.min(size.width, size.height) / BOARD_VIEW_UNITS;
+      }
     } else {
       camera.up.set(0, 1, 0);
     }
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
-  }, [camera, cameraMode, pov]);
+  }, [camera, cameraMode, pov, size]);
   return null;
 }
 
@@ -130,6 +148,9 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       orthographic={cameraMode === "2d"}
       camera={
         cameraMode === "2d"
+          // zoom here is just an initial value -- LookAtBoardCenter
+          // overrides it on the very next layout effect, fitted to the
+          // actual canvas size, before first paint.
           ? { position: cameraPosition, zoom: 60, near: 0.1, far: 100 }
           : { position: cameraPosition, fov: 45 }
       }
