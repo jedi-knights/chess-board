@@ -65,10 +65,33 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # [skip ci] so this push doesn't retrigger CI -> Badge in a loop.
-          git diff --quiet README.md \
-            || (git add README.md \
-                && git commit -m "chore: update coverage badge [skip ci]" \
-                && git push)
+          if git diff --quiet README.md; then
+            echo "No badge change"
+            exit 0
+          fi
+          git diff README.md > /tmp/badge.patch
+          for attempt in 1 2 3; do
+            git add README.md
+            git commit -m "chore: update coverage badge [skip ci]"
+            if git push; then
+              exit 0
+            fi
+            # Rejected: a concurrent Badge run (triggered by a second
+            # workflow_run event) already pushed its own badge commit.
+            # Reset to the new tip and reapply our diff on top of it.
+            echo "Push rejected (attempt $attempt) -- another Badge run updated main first. Retrying against the new tip."
+            git reset --hard HEAD~1
+            git fetch origin main
+            git reset --hard origin/main
+            if git apply --check /tmp/badge.patch 2>/dev/null; then
+              git apply /tmp/badge.patch
+            else
+              echo "Badge line already updated by a concurrent run -- nothing more to do."
+              exit 0
+            fi
+          done
+          echo "::error::failed to push badge commit after 3 attempts"
+          exit 1
 
       - name: Upload Pages artifact
         if: always()
