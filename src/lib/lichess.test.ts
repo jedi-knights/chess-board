@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  decideChallenge,
   isTerminalStatus,
   parseBotOnlineList,
   parseLichessAccountEvent,
   parseLichessLine,
+  type ChallengeDecisionContext,
+  type LichessChallengeEvent,
 } from "./lichess";
 
 describe("parseLichessLine", () => {
@@ -64,11 +67,106 @@ describe("isTerminalStatus", () => {
 });
 
 describe("parseLichessAccountEvent", () => {
-  it("parses a challenge event", () => {
-    const line = JSON.stringify({ type: "challenge", challenge: { id: "abcd1234" } });
+  it("parses a full challenge event with challenger, variant, speed, rated, and time control", () => {
+    const line = JSON.stringify({
+      type: "challenge",
+      challenge: {
+        id: "abcd1234",
+        challenger: { id: "alice", name: "Alice", title: null },
+        destUser: { id: "mybot" },
+        variant: { key: "standard" },
+        speed: "blitz",
+        rated: true,
+        timeControl: { type: "clock", limit: 300, increment: 3 },
+      },
+    });
     expect(parseLichessAccountEvent(line)).toEqual({
       type: "challenge",
       challengeId: "abcd1234",
+      challenger: { id: "alice", name: "Alice", title: null },
+      destUser: { id: "mybot" },
+      variant: "standard",
+      speed: "blitz",
+      rated: true,
+      initialFen: null,
+      timeControl: { type: "clock", limitSeconds: 300, incrementSeconds: 3, daysPerTurn: null },
+    });
+  });
+
+  it("surfaces a custom starting FEN when present", () => {
+    const line = JSON.stringify({
+      type: "challenge",
+      challenge: {
+        id: "custfen00",
+        variant: { key: "standard" },
+        speed: "blitz",
+        rated: false,
+        initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        timeControl: { type: "clock", limit: 300, increment: 3 },
+      },
+    });
+    const parsed = parseLichessAccountEvent(line);
+    expect(parsed?.type).toBe("challenge");
+    if (parsed?.type === "challenge") {
+      expect(parsed.initialFen).toContain("rnbqkbnr");
+    }
+  });
+
+  it("reads a chess960 variant as the non-standard string it is", () => {
+    const line = JSON.stringify({
+      type: "challenge",
+      challenge: {
+        id: "abcd1234",
+        variant: { key: "chess960" },
+        speed: "blitz",
+        rated: false,
+        timeControl: { type: "clock", limit: 180 },
+      },
+    });
+    const parsed = parseLichessAccountEvent(line);
+    expect(parsed?.type === "challenge" && parsed.variant).toBe("chess960");
+  });
+
+  it("parses a challengeCanceled event", () => {
+    const line = JSON.stringify({
+      type: "challengeCanceled",
+      challenge: { id: "abcd1234" },
+    });
+    expect(parseLichessAccountEvent(line)).toEqual({
+      type: "challengeCanceled",
+      challengeId: "abcd1234",
+    });
+  });
+
+  it("parses a challengeDeclined event, reading the reason from either field name", () => {
+    // Lichess docs show `reason`; some accounts of the shape have used
+    // `declineReason` -- both should be surfaced.
+    expect(
+      parseLichessAccountEvent(
+        JSON.stringify({
+          type: "challengeDeclined",
+          challenge: { id: "abcd1234", reason: "variant" },
+        }),
+      ),
+    ).toEqual({ type: "challengeDeclined", challengeId: "abcd1234", reason: "variant" });
+    expect(
+      parseLichessAccountEvent(
+        JSON.stringify({
+          type: "challengeDeclined",
+          challenge: { id: "abcd1234", declineReason: "later" },
+        }),
+      ),
+    ).toEqual({ type: "challengeDeclined", challengeId: "abcd1234", reason: "later" });
+  });
+
+  it("parses a gameFinish event", () => {
+    const line = JSON.stringify({
+      type: "gameFinish",
+      game: { gameId: "abcd1234" },
+    });
+    expect(parseLichessAccountEvent(line)).toEqual({
+      type: "gameFinish",
+      gameId: "abcd1234",
     });
   });
 
@@ -128,11 +226,124 @@ describe("parseLichessAccountEvent", () => {
   });
 
   it("returns null for an unrecognized event type", () => {
-    expect(parseLichessAccountEvent(JSON.stringify({ type: "challengeDeclined" }))).toBeNull();
+    expect(parseLichessAccountEvent(JSON.stringify({ type: "someFutureEvent" }))).toBeNull();
   });
 
   it("returns null for malformed JSON", () => {
     expect(parseLichessAccountEvent("not json")).toBeNull();
+  });
+});
+
+describe("decideChallenge", () => {
+  const CTX_DEFAULT: ChallengeDecisionContext = {
+    myAccountId: "mybot",
+    acceptRated: false,
+    activeGameId: null,
+  };
+
+  function baseChallenge(overrides: Partial<LichessChallengeEvent> = {}): LichessChallengeEvent {
+    return {
+      type: "challenge",
+      challengeId: "abcd1234",
+      challenger: { id: "alice", name: "Alice", title: null },
+      destUser: { id: "mybot" },
+      variant: "standard",
+      speed: "blitz",
+      rated: false,
+      initialFen: null,
+      timeControl: { type: "clock", limitSeconds: 300, incrementSeconds: 3, daysPerTurn: null },
+      ...overrides,
+    };
+  }
+
+  it("accepts a plain standard casual blitz challenge from someone else", () => {
+    expect(decideChallenge(baseChallenge(), CTX_DEFAULT)).toEqual({ kind: "accept" });
+  });
+
+  it("drops a self-challenge instead of trying to decline it (Lichess 400s a self-decline)", () => {
+    const decision = decideChallenge(
+      baseChallenge({ challenger: { id: "mybot", name: "MyBot", title: "BOT" } }),
+      CTX_DEFAULT,
+    );
+    expect(decision).toEqual({ kind: "drop", because: "self-challenge" });
+  });
+
+  it("declines a challenge whose destUser is not us with reason 'generic'", () => {
+    const decision = decideChallenge(
+      baseChallenge({ destUser: { id: "someone-else" } }),
+      CTX_DEFAULT,
+    );
+    expect(decision).toEqual({ kind: "decline", reason: "generic" });
+  });
+
+  it("accepts an open challenge (no destUser) that is otherwise fine", () => {
+    expect(decideChallenge(baseChallenge({ destUser: null }), CTX_DEFAULT)).toEqual({
+      kind: "accept",
+    });
+  });
+
+  it("declines a variant challenge with reason 'variant'", () => {
+    expect(
+      decideChallenge(baseChallenge({ variant: "chess960" }), CTX_DEFAULT),
+    ).toEqual({ kind: "decline", reason: "variant" });
+  });
+
+  it("declines a custom-starting-position challenge with reason 'generic'", () => {
+    expect(
+      decideChallenge(
+        baseChallenge({ initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1" }),
+        CTX_DEFAULT,
+      ),
+    ).toEqual({ kind: "decline", reason: "generic" });
+  });
+
+  it("declines a correspondence challenge with reason 'timeControl'", () => {
+    expect(
+      decideChallenge(
+        baseChallenge({
+          speed: "correspondence",
+          timeControl: {
+            type: "correspondence",
+            limitSeconds: null,
+            incrementSeconds: null,
+            daysPerTurn: 2,
+          },
+        }),
+        CTX_DEFAULT,
+      ),
+    ).toEqual({ kind: "decline", reason: "timeControl" });
+  });
+
+  it("declines a rated challenge with reason 'rated' when the operator hasn't opted in", () => {
+    expect(
+      decideChallenge(baseChallenge({ rated: true }), CTX_DEFAULT),
+    ).toEqual({ kind: "decline", reason: "rated" });
+  });
+
+  it("accepts a rated challenge once the operator has opted in", () => {
+    expect(
+      decideChallenge(baseChallenge({ rated: true }), { ...CTX_DEFAULT, acceptRated: true }),
+    ).toEqual({ kind: "accept" });
+  });
+
+  it("declines a challenge with reason 'later' when a game is already in progress", () => {
+    expect(
+      decideChallenge(baseChallenge(), { ...CTX_DEFAULT, activeGameId: "otherGame" }),
+    ).toEqual({ kind: "decline", reason: "later" });
+  });
+
+  it("safety branch order: a self-challenge drops even if it's also for a wrong destUser or rated", () => {
+    // Self-branch runs first so the operator sees the accurate reason
+    // in the debug log, not a downstream policy branch that hides it.
+    const decision = decideChallenge(
+      baseChallenge({
+        challenger: { id: "mybot", name: "MyBot", title: "BOT" },
+        destUser: { id: "someone-else" },
+        rated: true,
+      }),
+      CTX_DEFAULT,
+    );
+    expect(decision.kind).toBe("drop");
   });
 });
 

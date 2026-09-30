@@ -194,6 +194,28 @@ this file and the human-facing docs.
   guard, because the whole point of the endpoint is to *make* an account a bot, and
   requiring `is_bot == true` before it fires would be impossible. It still reads the
   bot slot's own token, so a misclick can't upgrade a real human's account.
+- **Incoming challenges are routed through `decideChallenge` in `src/lib/lichess.ts`,
+  which returns `accept | decline(reason) | drop(because)`.** Decline reasons are a
+  serde-validated enum in Rust (`LichessDeclineReason`) and a matching string-literal
+  union in TS -- exactly the set Lichess accepts on `POST /api/challenge/{id}/decline`;
+  anything else Lichess 400s. The decision function's branch order is safety-first
+  (self-challenge -> drop, wrong-destUser -> decline "generic") before policy
+  (concurrent-game -> "later", variant -> "variant", custom-FEN -> "generic",
+  correspondence -> "timeControl", rated-without-opt-in -> "rated"), so a malformed
+  challenge doesn't get a misleading policy-reason decline that hides the real problem.
+  Self-challenges *drop* rather than decline because Lichess 400s a self-decline;
+  letting Lichess time them out is the correct behavior. Do not "clean up" by folding
+  drop and decline into one branch -- they have different wire-level semantics.
+- **`lichessBotStore.acceptRated` defaults to `false` and is persisted.** A bot testing
+  an engine must not affect other players' ratings unless the operator has explicitly
+  opted in. The checkbox lives in `LichessBotControls`; the decision function reads
+  the persisted value. Do not flip the default without a separate, deliberate
+  conversation about the fair-play implication.
+- **Custom starting positions are declined for now** with reason "generic". Threading
+  a start FEN through `Ply`/`gameStore`/`fenAtPly`/`buildPositionCommand` is a
+  discrete follow-up (proposed in the PR-1 planning message and left explicitly out
+  of scope). When it lands, the decideChallenge branch relaxes; until then, refusing
+  is safer than accepting a challenge we can't actually play correctly.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via
@@ -303,6 +325,17 @@ this file and the human-facing docs.
   message on screen with no way to dismiss it short of restarting the app. Any future
   "terminal" transition (a new manual action that fully resets engine state) should clear
   `errorMessage` too, for the same reason.
+
+## Non-goals (deferred, not accidental)
+
+- **Custom starting positions on Lichess bot games.** Threading a start FEN through
+  `Ply`/`gameStore.fenAtPly`, `uci.ts`'s `buildPositionCommand`, and the challenge
+  decision flow is its own scope. Until it lands, `decideChallenge` refuses a
+  challenge with a non-null `initialFen`. Not a bug -- an explicit boundary.
+- **Concurrent bot games.** The Rust-side `LichessConnection` slot is a singleton
+  (one active game stream at a time), and supporting multiple would mean a
+  per-game map plus a routing layer inside `pump_ndjson_stream`. `decideChallenge`
+  returns `decline("later")` if `activeGameId` is set. See design decision above.
 
 ## Testing conventions
 

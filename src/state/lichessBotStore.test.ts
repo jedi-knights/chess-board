@@ -7,8 +7,7 @@ import { useLichessBotStore } from "./lichessBotStore";
 // Same rationale as engineStore.test.ts / lichessStore.test.ts: `invoke`
 // and `listen` are Tauri's IPC boundary, a genuine system edge. Everything
 // asserted below goes through the store's own public state, not internal
-// call traces alone. PR 2 will extend this file with challenge-decision
-// coverage; PR 1 covers only the per-mode-credential surface.
+// call traces alone.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
@@ -39,6 +38,7 @@ beforeEach(() => {
     hasToken: false,
     verifiedAccount: null,
     verifyError: null,
+    acceptRated: false,
     enginePath: null,
     movetimeMs: 1000,
     status: "idle",
@@ -47,6 +47,28 @@ beforeEach(() => {
     lastSentUci: null,
   });
 });
+
+function emit(eventName: string, payload: unknown) {
+  listeners.get(eventName)?.({ payload });
+}
+
+/**
+ * Fires the account event stream through the same seam Rust would, so the
+ * store's `installListenersOnce()` listener runs its full switch/route.
+ * Requires the listener to have been installed -- call `startListening`
+ * (with a verified BOT account) once per test that needs this.
+ */
+function emitAccountEvent(event: unknown) {
+  emit("lichess-event-stream", JSON.stringify(event));
+}
+
+async function startBotListening() {
+  useLichessBotStore.setState({
+    enginePath: "/bin/engine",
+    verifiedAccount: { id: "mybot", username: "MyBot", isBot: true },
+  });
+  await useLichessBotStore.getState().startListening();
+}
 
 describe("refreshHasToken / setToken / clearToken", () => {
   it("refreshHasToken asks about the bot slot specifically", async () => {
@@ -129,6 +151,168 @@ describe("startListening fair-play guard", () => {
     await useLichessBotStore.getState().startListening();
     expect(useLichessBotStore.getState().status).toBe("listening");
     expect(mockedInvoke).toHaveBeenCalledWith("lichess_stream_events", { slot: "bot" });
+  });
+});
+
+describe("account event stream routes challenges through decideChallenge", () => {
+  function fullChallenge(overrides: Record<string, unknown> = {}) {
+    return {
+      type: "challenge",
+      challenge: {
+        id: "abcd1234",
+        challenger: { id: "alice", name: "Alice", title: null },
+        destUser: { id: "mybot" },
+        variant: { key: "standard" },
+        speed: "blitz",
+        rated: false,
+        timeControl: { type: "clock", limit: 300, increment: 3 },
+        ...overrides,
+      },
+    };
+  }
+
+  it("accepts a plain standard casual blitz challenge from someone else", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(fullChallenge());
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_accept", {
+      slot: "bot",
+      challengeId: "abcd1234",
+    });
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_decline", expect.anything());
+  });
+
+  it("drops a self-challenge without calling accept or decline", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(
+      fullChallenge({ challenger: { id: "mybot", name: "MyBot", title: "BOT" } }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_accept", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_decline", expect.anything());
+  });
+
+  it("declines a variant challenge with reason 'variant'", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(fullChallenge({ variant: { key: "chess960" } }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+      slot: "bot",
+      challengeId: "abcd1234",
+      reason: "variant",
+    });
+  });
+
+  it("declines a rated challenge with reason 'rated' by default", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(fullChallenge({ rated: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+      slot: "bot",
+      challengeId: "abcd1234",
+      reason: "rated",
+    });
+  });
+
+  it("accepts a rated challenge once acceptRated is on", async () => {
+    await startBotListening();
+    useLichessBotStore.getState().setAcceptRated(true);
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(fullChallenge({ rated: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_accept", {
+      slot: "bot",
+      challengeId: "abcd1234",
+    });
+  });
+
+  it("declines a challenge with 'later' when a game is already in progress", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ activeGameId: "otherGame" });
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(fullChallenge());
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+      slot: "bot",
+      challengeId: "abcd1234",
+      reason: "later",
+    });
+  });
+
+  it("declines a custom-starting-FEN challenge with reason 'generic'", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(
+      fullChallenge({ initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+      slot: "bot",
+      challengeId: "abcd1234",
+      reason: "generic",
+    });
+  });
+
+  it("declines a correspondence challenge with reason 'timeControl'", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(
+      fullChallenge({
+        speed: "correspondence",
+        timeControl: { type: "correspondence", daysPerTurn: 3 },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+      slot: "bot",
+      challengeId: "abcd1234",
+      reason: "timeControl",
+    });
+  });
+
+  it("ignores challengeCanceled, challengeDeclined, and gameFinish (log-only)", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent({ type: "challengeCanceled", challenge: { id: "abcd1234" } });
+    emitAccountEvent({
+      type: "challengeDeclined",
+      challenge: { id: "abcd1234", reason: "variant" },
+    });
+    emitAccountEvent({ type: "gameFinish", game: { gameId: "abcd1234" } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // None of these should touch accept/decline endpoints.
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_accept", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_decline", expect.anything());
+  });
+});
+
+describe("setAcceptRated", () => {
+  it("flips the persisted preference", () => {
+    expect(useLichessBotStore.getState().acceptRated).toBe(false);
+    useLichessBotStore.getState().setAcceptRated(true);
+    expect(useLichessBotStore.getState().acceptRated).toBe(true);
   });
 });
 
