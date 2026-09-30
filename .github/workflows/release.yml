@@ -1,0 +1,68 @@
+name: Release
+
+# Builds a universal (Intel + Apple Silicon) macOS bundle and attaches it
+# to a published GitHub Release -- the release must be published, not
+# draft, since a Homebrew Cask fetches the asset over a plain
+# unauthenticated URL and draft-release assets aren't publicly reachable.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build a release for (e.g. v0.1.0)"
+        required: true
+
+jobs:
+  release:
+    name: Build & release (macOS universal)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      # Both targets are required for `--target universal-apple-darwin`
+      # below to link a single binary covering Intel and Apple Silicon --
+      # macos-latest runners are Apple Silicon, so the x86_64 target
+      # wouldn't be present otherwise.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # No Apple Developer signing identity is configured here -- the
+      # resulting .app/.dmg is unsigned and un-notarized. Gatekeeper will
+      # show an "unidentified developer" prompt on first launch (right-
+      # click > Open works around it). Fine for a personal Homebrew tap;
+      # revisit if this ever needs to reach users who can't do that.
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: "chess-board ${{ inputs.tag || github.ref_name }}"
+          releaseBody: "See the commit history for what changed since the last release."
+          releaseDraft: false
+          prerelease: false
+          # No updater plugin or signing key is configured in this project
+          # (see tauri.conf.json) -- the action's own default for this is
+          # `true`, which would try to generate a signed update manifest
+          # with nothing to sign it with.
+          uploadUpdaterJson: false
+          args: --target universal-apple-darwin
