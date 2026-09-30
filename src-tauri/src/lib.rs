@@ -13,10 +13,27 @@ pub fn run() {
         .manage(engine::BlackEngine(engine::new_shared_state()))
         .manage(lichess::LichessConnection(lichess::new_shared_lichess_state()))
         .manage(lichess::LichessEventConnection(lichess::new_shared_lichess_state()))
+        .manage(lichess::new_shared_account_cache())
         .setup(|app| {
             // A fresh debug.log per session, per the mandate that it must
             // never grow unbounded across a long-running dev session.
-            let _ = debug_log::clear(&app.handle().clone());
+            let handle = app.handle().clone();
+            let _ = debug_log::clear(&handle);
+            // Once-per-install migration: pre-PR-1 there was a single
+            // `lichess-personal-token` keychain entry; PR 1 split it into
+            // per-mode slots. Copy the legacy value into the human slot
+            // (the safer default) and delete the old entry so this branch
+            // never fires again. A failure here doesn't block launch --
+            // the user can just re-enter their token in the new UI.
+            match lichess::migrate_legacy_token() {
+                Ok(true) => {
+                    let _ = debug_log::append(&handle, "[lichess] migrated legacy token -> human slot");
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    let _ = debug_log::append(&handle, &format!("[lichess] token migration failed: {e}"));
+                }
+            }
             let view_menu = menu::build(app)?;
             app.set_menu(view_menu)?;
             app.on_menu_event(menu::handle_event);
@@ -34,6 +51,7 @@ pub fn run() {
             lichess::lichess_token_set,
             lichess::lichess_token_has,
             lichess::lichess_token_clear,
+            lichess::lichess_verify_account,
             lichess::lichess_stream_game,
             lichess::lichess_stop_game,
             lichess::lichess_make_move,

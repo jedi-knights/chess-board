@@ -10,11 +10,14 @@ export function LichessControls() {
   const [tokenInput, setTokenInput] = useState("");
 
   const hasToken = useLichessStore((s) => s.hasToken);
+  const verifiedAccount = useLichessStore((s) => s.verifiedAccount);
+  const verifyError = useLichessStore((s) => s.verifyError);
   const status = useLichessStore((s) => s.status);
   const errorMessage = useLichessStore((s) => s.errorMessage);
   const refreshHasToken = useLichessStore((s) => s.refreshHasToken);
   const setToken = useLichessStore((s) => s.setToken);
   const clearToken = useLichessStore((s) => s.clearToken);
+  const verifyAccount = useLichessStore((s) => s.verifyAccount);
   const connect = useLichessStore((s) => s.connect);
   const disconnect = useLichessStore((s) => s.disconnect);
 
@@ -27,11 +30,26 @@ export function LichessControls() {
     void refreshHasToken();
   }, [refreshHasToken]);
 
+  // Auto-verify on mount and after a token change: the UI needs the
+  // verified username to display, and it needs the isBot flag to gate
+  // Connect on the fair-play guard.
+  useEffect(() => {
+    if (hasToken && !verifiedAccount && !verifyError) {
+      void verifyAccount();
+    }
+  }, [hasToken, verifiedAccount, verifyError, verifyAccount]);
+
   async function saveToken() {
     if (!tokenInput.trim()) return;
     await setToken(tokenInput);
     setTokenInput("");
+    // A fresh token needs a fresh verify -- setToken cleared the cached
+    // account, so this re-populates it (or reports why it can't).
+    await verifyAccount();
   }
+
+  const isBotAccount = verifiedAccount?.isBot === true;
+  const canConnect = hasToken && !!verifiedAccount && !isBotAccount;
 
   async function start() {
     if (!gameIdInput.trim()) return;
@@ -63,12 +81,23 @@ export function LichessControls() {
         </div>
       ) : (
         <div className="lichess-token-field">
-          <p className="lichess-token-status">Token saved in the OS keychain.</p>
+          <p className="lichess-token-status">
+            Token saved in the OS keychain
+            {verifiedAccount ? ` — verified as ${verifiedAccount.username}` : ""}
+            {isBotAccount ? " (BOT account)" : ""}
+          </p>
           <button onClick={clearToken} disabled={connected}>
             Clear token
           </button>
         </div>
       )}
+      {hasToken && isBotAccount && (
+        <p className="load-error">
+          This is a BOT account. Human mode refuses BOT tokens to protect Lichess fair-play —
+          clear this token and put it in the Bot slot under Engine-vs-Lichess mode instead.
+        </p>
+      )}
+      {verifyError && <p className="load-error">{verifyError}</p>}
 
       <input
         type="text"
@@ -89,7 +118,7 @@ export function LichessControls() {
         </select>
       </label>
       {!connected ? (
-        <button onClick={start} disabled={!hasToken || !gameIdInput.trim()}>
+        <button onClick={start} disabled={!canConnect || !gameIdInput.trim()}>
           Connect
         </button>
       ) : (

@@ -10,15 +10,64 @@
 //! it's a bearer credential, not app state, and every command that needs it
 //! reads it fresh from the keychain rather than having it passed in from JS.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinHandle;
 
 const GAME_ID_LEN: usize = 8;
 const KEYRING_SERVICE: &str = "com.jediknights.chessboard";
-const KEYRING_USER: &str = "lichess-personal-token";
+/// Pre-PR-1 there was one credential shared across every Lichess flow; the
+/// upgrade to per-mode slots keeps this constant only to *migrate* off it
+/// on first launch (see `migrate_legacy_token`). New code never reads this.
+const KEYRING_USER_LEGACY: &str = "lichess-personal-token";
+const KEYRING_USER_HUMAN: &str = "lichess-human-token";
+const KEYRING_USER_BOT: &str = "lichess-bot-token";
+
+/// Which credential a Lichess request runs under. Two tokens are the *only*
+/// safe way to enforce Lichess's fair-play rule that a BOT account never
+/// makes a human's moves and vice versa -- a single token that either mode
+/// could use makes that guarantee unenforceable in code.
+///
+/// The tag is chosen by *Rust*, not by JS, for every command whose slot is
+/// determined by the endpoint it hits (every `/api/board/*` call is Human,
+/// every `/api/bot/*` call is Bot). Only commands that legitimately serve
+/// both modes (the account event stream, challenge accept/decline, the
+/// pending-challenge handler) accept a slot parameter -- and even then
+/// Rust validates it against a fixed enum before use, so a malformed JS
+/// value is rejected before it can reach the keychain.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum TokenSlot {
+    Human,
+    Bot,
+}
+
+fn keyring_user(slot: TokenSlot) -> &'static str {
+    match slot {
+        TokenSlot::Human => KEYRING_USER_HUMAN,
+        TokenSlot::Bot => KEYRING_USER_BOT,
+    }
+}
+
+/// Whatever `GET /api/account` reports about the currently-authorized token,
+/// narrowed to the fields the fair-play guard needs. See
+/// `LichessAccountInfo` in `src/lib/lichess.ts` -- the frontend
+/// counterpart. `camelCase` on the wire so the TS side reads it naturally
+/// as `info.isBot` without a separate rename layer.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    pub id: String,
+    pub username: String,
+    /// Lichess reports the account's title (`"BOT"`, `"GM"`, `"IM"`, ...) or
+    /// omits the field entirely; only `title == "BOT"` matters for the
+    /// fair-play guard, so this collapses to a single boolean.
+    pub is_bot: bool,
+}
 
 /// Extracts and validates a Lichess game id from either a bare id or a full
 /// game URL (e.g. `https://lichess.org/abcd1234`, optionally with a
@@ -54,37 +103,58 @@ pub fn parse_game_id(input: &str) -> Result<String, String> {
     Ok(candidate.to_string())
 }
 
-fn keyring_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+fn keyring_entry_for(user: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, user)
         .map_err(|e| format!("failed to access OS keychain: {e}"))
 }
 
-/// Reads the stored personal access token. `Err` (not an empty string) when
-/// none is set, so every caller that needs the token to make a request is
-/// forced to handle "not connected" rather than silently sending an
-/// unauthenticated request that Lichess would then reject.
-fn token() -> Result<String, String> {
-    match keyring_entry()?.get_password() {
+fn keyring_entry(slot: TokenSlot) -> Result<keyring::Entry, String> {
+    keyring_entry_for(keyring_user(slot))
+}
+
+/// Reads the stored personal access token for the given slot. `Err` (not
+/// an empty string) when none is set, so every caller that needs the token
+/// to make a request is forced to handle "not connected" rather than
+/// silently sending an unauthenticated request that Lichess would then
+/// reject.
+fn token(slot: TokenSlot) -> Result<String, String> {
+    match keyring_entry(slot)?.get_password() {
         Ok(token) => Ok(token),
-        Err(keyring::Error::NoEntry) => Err("no Lichess token is set -- add one first".to_string()),
+        Err(keyring::Error::NoEntry) => {
+            let label = match slot {
+                TokenSlot::Human => "human",
+                TokenSlot::Bot => "bot",
+            };
+            Err(format!("no Lichess {label} token is set -- add one first"))
+        }
         Err(e) => Err(format!("failed to read token from OS keychain: {e}")),
     }
 }
 
 #[tauri::command]
-pub fn lichess_token_set(token: String) -> Result<(), String> {
+pub fn lichess_token_set(
+    slot: TokenSlot,
+    token: String,
+    account_cache: State<'_, SharedAccountCache>,
+) -> Result<(), String> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
         return Err("token is empty".to_string());
     }
-    keyring_entry()?
+    keyring_entry(slot)?
         .set_password(trimmed)
-        .map_err(|e| format!("failed to store token in OS keychain: {e}"))
+        .map_err(|e| format!("failed to store token in OS keychain: {e}"))?;
+    // A new token means the cached account info for this slot is stale --
+    // could be a rotation to a completely different account. Drop it so
+    // the next request re-verifies before it decides "is this the right
+    // slot for this account?".
+    invalidate_account_cache(&account_cache, slot);
+    Ok(())
 }
 
 #[tauri::command]
-pub fn lichess_token_has() -> Result<bool, String> {
-    match keyring_entry()?.get_password() {
+pub fn lichess_token_has(slot: TokenSlot) -> Result<bool, String> {
+    match keyring_entry(slot)?.get_password() {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
         Err(e) => Err(format!("failed to query OS keychain: {e}")),
@@ -92,12 +162,197 @@ pub fn lichess_token_has() -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn lichess_token_clear() -> Result<(), String> {
-    match keyring_entry()?.delete_credential() {
+pub fn lichess_token_clear(
+    slot: TokenSlot,
+    account_cache: State<'_, SharedAccountCache>,
+) -> Result<(), String> {
+    let result = match keyring_entry(slot)?.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(format!("failed to clear token from OS keychain: {e}")),
+    };
+    // Invalidate regardless of the delete outcome -- if we couldn't remove
+    // the credential but we tried to, whoever asked believed the token is
+    // gone and shouldn't be gated by stale cache state.
+    invalidate_account_cache(&account_cache, slot);
+    result
+}
+
+/// Migrates the legacy single-token entry (`lichess-personal-token`, pre-
+/// PR-1) into the human slot on first launch after upgrade, then deletes
+/// it. Idempotent: once migrated, the legacy entry no longer exists, so
+/// subsequent launches skip this entirely.
+///
+/// The legacy token could have belonged to either a human or a BOT
+/// account; the safer default is "assume it was a human token" (the
+/// most common case) -- the user can rotate it, or the account-verify
+/// guard will surface a mismatch on first use if it was actually a BOT
+/// token and the user tries to use it in human mode.
+pub fn migrate_legacy_token() -> Result<bool, String> {
+    let legacy = keyring_entry_for(KEYRING_USER_LEGACY)?;
+    let existing = match legacy.get_password() {
+        Ok(token) => token,
+        Err(keyring::Error::NoEntry) => return Ok(false),
+        Err(e) => return Err(format!("failed to read legacy token: {e}")),
+    };
+    // Do not overwrite an already-set human slot. If someone has set the
+    // new slot explicitly, the legacy one is dead weight -- delete it.
+    let human = keyring_entry_for(KEYRING_USER_HUMAN)?;
+    let human_already_set = matches!(human.get_password(), Ok(_));
+    if !human_already_set {
+        human
+            .set_password(&existing)
+            .map_err(|e| format!("failed to write migrated human token: {e}"))?;
     }
+    // Only delete the legacy entry after the human slot is confirmed
+    // present -- either we just wrote it, or it was already there.
+    let _ = legacy.delete_credential();
+    Ok(true)
+}
+
+/// Per-slot cache of what `GET /api/account` returned last time we asked.
+/// Populated on first use of each slot, invalidated on `lichess_token_set` /
+/// `lichess_token_clear`. `Arc<Mutex<...>>` because multiple async command
+/// tasks can concurrently want to check or populate it.
+#[derive(Default)]
+pub struct AccountCache {
+    entries: Mutex<HashMap<TokenSlot, AccountInfo>>,
+}
+
+pub type SharedAccountCache = Arc<AccountCache>;
+
+pub fn new_shared_account_cache() -> SharedAccountCache {
+    Arc::new(AccountCache::default())
+}
+
+fn cache_lock(cache: &SharedAccountCache) -> Result<MutexGuard<'_, HashMap<TokenSlot, AccountInfo>>, String> {
+    cache.entries.lock().map_err(|_| "account cache lock poisoned".to_string())
+}
+
+fn invalidate_account_cache(cache: &SharedAccountCache, slot: TokenSlot) {
+    if let Ok(mut entries) = cache.entries.lock() {
+        entries.remove(&slot);
+    }
+}
+
+fn cache_get(cache: &SharedAccountCache, slot: TokenSlot) -> Option<AccountInfo> {
+    cache_lock(cache).ok().and_then(|entries| entries.get(&slot).cloned())
+}
+
+fn cache_put(cache: &SharedAccountCache, slot: TokenSlot, info: AccountInfo) {
+    if let Ok(mut entries) = cache.entries.lock() {
+        entries.insert(slot, info);
+    }
+}
+
+/// Live-fetches `/api/account` for the token in `slot` and returns the
+/// account info the fair-play guard needs. Does *not* enforce that the
+/// account type matches the slot -- that's `token_for_slot_verified`'s
+/// job; separating them means the verify endpoint itself always succeeds
+/// on a valid token regardless of which slot it's in (the caller then
+/// gets to decide whether the account is a legal fit for that slot).
+async fn fetch_account_info(client: &reqwest::Client, token: &str) -> Result<AccountInfo, String> {
+    let response = client
+        .get("https://lichess.org/api/account")
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach lichess: {e}"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("lichess rejected the token (401 Unauthorized) -- rotate or re-enter it".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("lichess returned {status} for /api/account"));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("failed to read lichess response: {e}"))?;
+    parse_account_info(&body)
+}
+
+/// Frontend-parallel of the TS `parseAccountInfo` -- kept in Rust so
+/// `token_for_slot_verified` doesn't need to serialize the JSON back to
+/// the frontend to make its decision. Deliberately narrow: only the fields
+/// the fair-play guard reads, and a strict-null for `title` reading (only
+/// `"BOT"` counts as a bot; anything else, including missing, is not).
+fn parse_account_info(body: &str) -> Result<AccountInfo, String> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("lichess sent unparseable /api/account body: {e}"))?;
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "lichess /api/account response is missing `id`".to_string())?
+        .to_string();
+    let username = value
+        .get("username")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "lichess /api/account response is missing `username`".to_string())?
+        .to_string();
+    let is_bot = value.get("title").and_then(|v| v.as_str()) == Some("BOT");
+    Ok(AccountInfo { id, username, is_bot })
+}
+
+/// Ensures the token in `slot` is set, corresponds to a real Lichess
+/// account, and that account's type matches the slot's expected role.
+/// Returns `(token_string, account_info)` so the caller doesn't need to
+/// re-read the keychain for the actual request. Populates the account
+/// cache on the way through, so subsequent calls are keychain-read +
+/// mutex-hashmap-lookup, not another HTTP round-trip.
+async fn token_for_slot_verified(
+    slot: TokenSlot,
+    account_cache: &SharedAccountCache,
+) -> Result<(String, AccountInfo), String> {
+    let token = token(slot)?;
+    let info = match cache_get(account_cache, slot) {
+        Some(info) => info,
+        None => {
+            let client = new_client()?;
+            let fresh = fetch_account_info(&client, &token).await?;
+            cache_put(account_cache, slot, fresh.clone());
+            fresh
+        }
+    };
+    enforce_slot_matches(slot, &info)?;
+    Ok((token, info))
+}
+
+/// Fair-play guard, enforced at every request boundary: a BOT-slot request
+/// must run under a BOT account and a Human-slot request must not. This
+/// exists in code, not just in the UI, because the UI could be bypassed by
+/// a malicious frontend build; the OS keychain and this guard are the two
+/// non-bypassable enforcement points.
+fn enforce_slot_matches(slot: TokenSlot, info: &AccountInfo) -> Result<(), String> {
+    match (slot, info.is_bot) {
+        (TokenSlot::Human, false) | (TokenSlot::Bot, true) => Ok(()),
+        (TokenSlot::Human, true) => Err(format!(
+            "the human slot's token belongs to a BOT account (\"{}\") -- \
+             put it in the bot slot instead",
+            info.username
+        )),
+        (TokenSlot::Bot, false) => Err(format!(
+            "the bot slot's token belongs to a non-BOT account (\"{}\") -- \
+             either use the human slot or upgrade this account to BOT",
+            info.username
+        )),
+    }
+}
+
+/// Frontend-facing verify command. Populates the cache as a side effect.
+/// Deliberately does *not* run `enforce_slot_matches`: the UI needs to be
+/// able to *display* "this token is a BOT account, so put it in the bot
+/// slot" without every verify call erroring out first.
+#[tauri::command]
+pub async fn lichess_verify_account(
+    slot: TokenSlot,
+    account_cache: State<'_, SharedAccountCache>,
+) -> Result<AccountInfo, String> {
+    let token = token(slot)?;
+    let client = new_client()?;
+    let info = fetch_account_info(&client, &token).await?;
+    cache_put(&account_cache, slot, info.clone());
+    Ok(info)
 }
 
 /// Validates a single UCI move (e.g. `e2e4`, `e7e8q`) before it's spliced
@@ -263,16 +518,23 @@ fn new_client() -> Result<reqwest::Client, String> {
 /// app plays either as a human (Board API) or runs a bot loop (Bot API) at
 /// any given moment, never both, so there's only ever one active game
 /// stream to track regardless of which mode started it.
+/// The `slot` argument is *not* taken from JS: the caller passes it as a
+/// hardcoded constant matching the endpoint's `kind` (Human for `board`,
+/// Bot for `bot`). Slot selection at the HTTP boundary is a code-level
+/// invariant, not a JS parameter, so a compromised frontend can't ask the
+/// human token to stream through the bot API or vice versa.
 async fn stream_game_impl(
     app: AppHandle,
     shared: SharedLichessState,
+    account_cache: SharedAccountCache,
     game_id_or_url: String,
+    slot: TokenSlot,
     kind: &str,
     line_event: &'static str,
     exit_event: &'static str,
 ) -> Result<(), String> {
     let game_id = parse_game_id(&game_id_or_url)?;
-    let token = token()?;
+    let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
     // Never leak a previous stream task if the user connects to a new game
     // without explicitly disconnecting first.
     stop_stream_locked(&shared)?;
@@ -300,12 +562,15 @@ async fn stream_game_impl(
 pub async fn lichess_stream_game(
     app: AppHandle,
     state: State<'_, LichessConnection>,
+    account_cache: State<'_, SharedAccountCache>,
     game_id_or_url: String,
 ) -> Result<(), String> {
     stream_game_impl(
         app,
         state.0.clone(),
+        account_cache.inner().clone(),
         game_id_or_url,
+        TokenSlot::Human,
         "board",
         "lichess-game-stream",
         "lichess-game-exit",
@@ -317,12 +582,15 @@ pub async fn lichess_stream_game(
 pub async fn lichess_bot_stream_game(
     app: AppHandle,
     state: State<'_, LichessConnection>,
+    account_cache: State<'_, SharedAccountCache>,
     game_id_or_url: String,
 ) -> Result<(), String> {
     stream_game_impl(
         app,
         state.0.clone(),
+        account_cache.inner().clone(),
         game_id_or_url,
+        TokenSlot::Bot,
         "bot",
         "lichess-bot-game-stream",
         "lichess-bot-game-exit",
@@ -335,16 +603,18 @@ pub fn lichess_stop_game(state: State<'_, LichessConnection>) -> Result<(), Stri
     stop_stream_locked(&state.0)
 }
 
-/// Shared body of `lichess_make_move`/`lichess_bot_make_move` -- `kind` is
-/// `"board"` or `"bot"`, the only difference in the request Lichess sees.
+/// Shared body of `lichess_make_move`/`lichess_bot_make_move` -- same
+/// slot-hardcoded-at-caller reasoning as `stream_game_impl`.
 async fn make_move_impl(
+    account_cache: SharedAccountCache,
     game_id_or_url: String,
     uci_move: String,
+    slot: TokenSlot,
     kind: &str,
 ) -> Result<(), String> {
     let game_id = parse_game_id(&game_id_or_url)?;
     validate_uci_move(&uci_move)?;
-    let token = token()?;
+    let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
 
     let client = new_client()?;
     let url = format!("https://lichess.org/api/{kind}/game/{game_id}/move/{uci_move}");
@@ -364,13 +634,35 @@ async fn make_move_impl(
 }
 
 #[tauri::command]
-pub async fn lichess_make_move(game_id_or_url: String, uci_move: String) -> Result<(), String> {
-    make_move_impl(game_id_or_url, uci_move, "board").await
+pub async fn lichess_make_move(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+    uci_move: String,
+) -> Result<(), String> {
+    make_move_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        uci_move,
+        TokenSlot::Human,
+        "board",
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn lichess_bot_make_move(game_id_or_url: String, uci_move: String) -> Result<(), String> {
-    make_move_impl(game_id_or_url, uci_move, "bot").await
+pub async fn lichess_bot_make_move(
+    account_cache: State<'_, SharedAccountCache>,
+    game_id_or_url: String,
+    uci_move: String,
+) -> Result<(), String> {
+    make_move_impl(
+        account_cache.inner().clone(),
+        game_id_or_url,
+        uci_move,
+        TokenSlot::Bot,
+        "bot",
+    )
+    .await
 }
 
 /// The account-wide event stream (incoming challenges, game starts) is a
@@ -384,8 +676,14 @@ pub struct LichessEventConnection(pub SharedLichessState);
 pub async fn lichess_stream_events(
     app: AppHandle,
     state: State<'_, LichessEventConnection>,
+    account_cache: State<'_, SharedAccountCache>,
+    slot: TokenSlot,
 ) -> Result<(), String> {
-    let token = token()?;
+    // Both modes' account event streams -- human seek + challenge inbox,
+    // bot challenge inbox -- run over `/api/stream/event`, so the slot is
+    // a real caller-supplied parameter here (still validated against the
+    // `TokenSlot` enum by serde). See `TokenSlot`'s doc comment.
+    let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
     let shared = state.0.clone();
     stop_stream_locked(&shared)?;
 
@@ -420,11 +718,15 @@ pub fn lichess_stop_events(state: State<'_, LichessEventConnection>) -> Result<(
 }
 
 #[tauri::command]
-pub async fn lichess_challenge_accept(challenge_id: String) -> Result<(), String> {
+pub async fn lichess_challenge_accept(
+    account_cache: State<'_, SharedAccountCache>,
+    slot: TokenSlot,
+    challenge_id: String,
+) -> Result<(), String> {
     // Challenge ids share the exact same 8-char alphanumeric shape as game
     // ids -- reusing the validator here is deliberate, not a coincidence.
     let id = parse_game_id(&challenge_id)?;
-    let token = token()?;
+    let (token, _) = token_for_slot_verified(slot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/challenge/{id}/accept");
     let response = client
@@ -448,9 +750,19 @@ pub async fn lichess_challenge_accept(challenge_id: String) -> Result<(), String
 /// games as a human again, nor be converted back. The frontend gates this
 /// behind an explicit, separately-confirmed action -- never bundle it into
 /// "start listening for challenges".
+///
+/// This is the *one* command that reads the Bot slot without the standard
+/// `enforce_slot_matches` guard: an account that has just been created and
+/// is *about* to be upgraded is by definition not yet a BOT, so requiring
+/// `is_bot == true` before upgrade is impossible. Bypass here is safe
+/// because the endpoint's whole purpose is to *make* the account a bot;
+/// we still read the bot slot's own token (never the human's) so a
+/// misclick can't accidentally upgrade a real human's account.
 #[tauri::command]
-pub async fn lichess_bot_upgrade() -> Result<(), String> {
-    let token = token()?;
+pub async fn lichess_bot_upgrade(
+    account_cache: State<'_, SharedAccountCache>,
+) -> Result<(), String> {
+    let token = token(TokenSlot::Bot)?;
     let client = new_client()?;
     let response = client
         .post("https://lichess.org/api/bot/account/upgrade")
@@ -466,6 +778,11 @@ pub async fn lichess_bot_upgrade() -> Result<(), String> {
             "lichess rejected the bot upgrade request: {status} {body}"
         ));
     }
+    // After a successful upgrade, the cached account (if any) is stale --
+    // the same account is now a BOT, which the next verify call must
+    // reflect. Drop it so the guard doesn't keep refusing bot-slot calls
+    // based on the pre-upgrade `is_bot: false` snapshot.
+    invalidate_account_cache(&account_cache, TokenSlot::Bot);
     Ok(())
 }
 
@@ -508,6 +825,7 @@ pub async fn lichess_bot_online(nb: Option<u32>) -> Result<String, String> {
 /// business opting a user into by default.
 #[tauri::command]
 pub async fn lichess_challenge_bot(
+    account_cache: State<'_, SharedAccountCache>,
     username: String,
     clock_limit_seconds: u32,
     clock_increment_seconds: u32,
@@ -517,7 +835,11 @@ pub async fn lichess_challenge_bot(
     if !matches!(color.as_str(), "random" | "white" | "black") {
         return Err(format!("\"{color}\" is not a valid color"));
     }
-    let token = token()?;
+    // The *bot* slot challenges another bot -- this is the "engine on my
+    // BOT account challenges another bot" flow from the pre-PR-4 UI, not
+    // a human challenging a bot (PR 4 adds `lichess_challenge_user` for
+    // the human-mode counterpart).
+    let (token, _) = token_for_slot_verified(TokenSlot::Bot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/challenge/{username}");
     let response = client
@@ -673,5 +995,115 @@ mod tests {
     fn rejects_an_injection_attempt_disguised_as_a_username() {
         assert!(validate_username("bot/../../etc").is_err());
         assert!(validate_username("bot; rm -rf").is_err());
+    }
+
+    #[test]
+    fn keyring_user_maps_each_slot_to_its_distinct_entry() {
+        assert_eq!(keyring_user(TokenSlot::Human), "lichess-human-token");
+        assert_eq!(keyring_user(TokenSlot::Bot), "lichess-bot-token");
+        assert_ne!(keyring_user(TokenSlot::Human), keyring_user(TokenSlot::Bot));
+    }
+
+    #[test]
+    fn token_slot_deserializes_from_the_lowercase_tags_the_frontend_sends() {
+        let human: TokenSlot = serde_json::from_str("\"human\"").expect("human should parse");
+        let bot: TokenSlot = serde_json::from_str("\"bot\"").expect("bot should parse");
+        assert_eq!(human, TokenSlot::Human);
+        assert_eq!(bot, TokenSlot::Bot);
+    }
+
+    #[test]
+    fn token_slot_rejects_anything_else_the_frontend_might_send() {
+        // Belt-and-braces: even if a compromised frontend sent an arbitrary
+        // string here, serde's enum tag rejects it before it can reach the
+        // keychain. Same guarantee `parse_game_id` / `validate_uci_move`
+        // give for the URL-embedded parameters.
+        assert!(serde_json::from_str::<TokenSlot>("\"admin\"").is_err());
+        assert!(serde_json::from_str::<TokenSlot>("\"\"").is_err());
+        assert!(serde_json::from_str::<TokenSlot>("null").is_err());
+    }
+
+    #[test]
+    fn parse_account_info_extracts_id_username_and_bot_title() {
+        let body = r#"{"id":"maia1","username":"maia1","title":"BOT","perfs":{}}"#;
+        let info = parse_account_info(body).expect("valid account body");
+        assert_eq!(info.id, "maia1");
+        assert_eq!(info.username, "maia1");
+        assert!(info.is_bot);
+    }
+
+    #[test]
+    fn parse_account_info_treats_a_missing_title_as_not_a_bot() {
+        let body = r#"{"id":"alice","username":"Alice"}"#;
+        let info = parse_account_info(body).expect("valid account body");
+        assert!(!info.is_bot);
+    }
+
+    #[test]
+    fn parse_account_info_treats_a_non_bot_title_as_not_a_bot() {
+        // Fair-play matters: an IM/GM/FM account is *not* a bot for the
+        // slot-matching guard's purposes.
+        let body = r#"{"id":"gmalice","username":"GMAlice","title":"GM"}"#;
+        let info = parse_account_info(body).expect("valid account body");
+        assert!(!info.is_bot);
+    }
+
+    #[test]
+    fn parse_account_info_fails_closed_on_missing_id_or_username() {
+        assert!(parse_account_info(r#"{"username":"x"}"#).is_err());
+        assert!(parse_account_info(r#"{"id":"x"}"#).is_err());
+        assert!(parse_account_info("not json").is_err());
+    }
+
+    #[test]
+    fn enforce_slot_matches_accepts_a_correct_pairing() {
+        let human = AccountInfo { id: "a".into(), username: "a".into(), is_bot: false };
+        let bot = AccountInfo { id: "b".into(), username: "b".into(), is_bot: true };
+        assert!(enforce_slot_matches(TokenSlot::Human, &human).is_ok());
+        assert!(enforce_slot_matches(TokenSlot::Bot, &bot).is_ok());
+    }
+
+    #[test]
+    fn enforce_slot_matches_rejects_a_bot_account_on_the_human_slot() {
+        let bot = AccountInfo { id: "b".into(), username: "b".into(), is_bot: true };
+        let err = enforce_slot_matches(TokenSlot::Human, &bot).unwrap_err();
+        assert!(err.contains("BOT account"));
+        assert!(err.contains("bot slot"));
+    }
+
+    #[test]
+    fn enforce_slot_matches_rejects_a_non_bot_account_on_the_bot_slot() {
+        let human = AccountInfo { id: "a".into(), username: "a".into(), is_bot: false };
+        let err = enforce_slot_matches(TokenSlot::Bot, &human).unwrap_err();
+        assert!(err.contains("non-BOT account"));
+    }
+
+    #[test]
+    fn account_cache_stores_and_retrieves_per_slot() {
+        let cache = new_shared_account_cache();
+        let human = AccountInfo { id: "h".into(), username: "H".into(), is_bot: false };
+        let bot = AccountInfo { id: "b".into(), username: "B".into(), is_bot: true };
+        cache_put(&cache, TokenSlot::Human, human.clone());
+        cache_put(&cache, TokenSlot::Bot, bot.clone());
+        assert_eq!(cache_get(&cache, TokenSlot::Human).unwrap().username, "H");
+        assert_eq!(cache_get(&cache, TokenSlot::Bot).unwrap().username, "B");
+    }
+
+    #[test]
+    fn account_cache_invalidation_drops_only_the_named_slot() {
+        let cache = new_shared_account_cache();
+        cache_put(
+            &cache,
+            TokenSlot::Human,
+            AccountInfo { id: "h".into(), username: "H".into(), is_bot: false },
+        );
+        cache_put(
+            &cache,
+            TokenSlot::Bot,
+            AccountInfo { id: "b".into(), username: "B".into(), is_bot: true },
+        );
+        invalidate_account_cache(&cache, TokenSlot::Human);
+        assert!(cache_get(&cache, TokenSlot::Human).is_none());
+        assert!(cache_get(&cache, TokenSlot::Bot).is_some());
     }
 }

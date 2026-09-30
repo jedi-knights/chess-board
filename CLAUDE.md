@@ -169,6 +169,31 @@ this file and the human-facing docs.
   path itself (must be a real file) — the native file dialog is the trust boundary here,
   the same reasoning already applied to the `fs` read scope below. Do not "fix" this by
   adding a `shell:allow-execute` permission; it doesn't fit this use case.
+- **Two OS-keychain slots, one per Lichess mode; slot selection lives in Rust, never in JS.**
+  Human-vs-Lichess uses `lichess-human-token`, Engine-vs-Lichess uses `lichess-bot-token`
+  (both under service `com.jediknights.chessboard`). Every `/api/board/*` Tauri command
+  hardcodes `TokenSlot::Human`; every `/api/bot/*` command hardcodes `TokenSlot::Bot`;
+  commands both modes use (event stream, challenge accept/decline) take a `slot:
+  TokenSlot` parameter that serde validates against a fixed `"human"|"bot"` enum before
+  it can reach the keychain. A malformed or admin-y string from a compromised frontend
+  is rejected at the deserialize step, not at the request. On first launch after the
+  PR-1 upgrade, `migrate_legacy_token` in `src-tauri/src/lichess.rs` copies the old
+  single-entry `lichess-personal-token` into the human slot then deletes it — idempotent,
+  so subsequent launches skip it.
+- **Every authenticated Lichess request runs `enforce_slot_matches` before it goes out.**
+  Bot-slot request under a non-BOT account, or human-slot request under a BOT account, is
+  refused *in Rust* with a message telling the user which slot to use. The account type
+  is verified once per slot via `GET /api/account` and cached in
+  `SharedAccountCache`; `lichess_token_set` / `lichess_token_clear` /
+  `lichess_bot_upgrade` all invalidate the entry for the affected slot so the next
+  request re-verifies. The frontend (`lichessStore.connect`,
+  `lichessBotStore.startListening`) checks the cached `verifiedAccount.isBot` for a
+  defense-in-depth refusal without a round-trip, but Rust is the authoritative guard:
+  the UI check exists only to produce the same error faster, never as a replacement.
+  The `lichess_bot_upgrade` command is the one exception — it deliberately skips the
+  guard, because the whole point of the endpoint is to *make* an account a bot, and
+  requiring `is_bot == true` before it fires would be impossible. It still reads the
+  bot slot's own token, so a misclick can't upgrade a real human's account.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via

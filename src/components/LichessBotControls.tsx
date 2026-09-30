@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { parseBotOnlineList, type LichessBotSummary } from "../lib/lichess";
 import { useLichessBotStore } from "../state/lichessBotStore";
@@ -16,6 +16,7 @@ function ratingsText(ratings: Record<string, number>): string {
 
 export function LichessBotControls() {
   const [confirmText, setConfirmText] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
   const [bots, setBots] = useState<LichessBotSummary[]>([]);
   const [loadingBots, setLoadingBots] = useState(false);
   const [clockLimitMinutes, setClockLimitMinutes] = useState(5);
@@ -23,6 +24,14 @@ export function LichessBotControls() {
   const [color, setColor] = useState<"random" | "white" | "black">("random");
   const [challengingUsername, setChallengingUsername] = useState<string | null>(null);
   const [challengeError, setChallengeError] = useState<string | null>(null);
+
+  const hasToken = useLichessBotStore((s) => s.hasToken);
+  const verifiedAccount = useLichessBotStore((s) => s.verifiedAccount);
+  const verifyError = useLichessBotStore((s) => s.verifyError);
+  const refreshHasToken = useLichessBotStore((s) => s.refreshHasToken);
+  const setToken = useLichessBotStore((s) => s.setToken);
+  const clearToken = useLichessBotStore((s) => s.clearToken);
+  const verifyAccount = useLichessBotStore((s) => s.verifyAccount);
 
   const enginePath = useLichessBotStore((s) => s.enginePath);
   const setEnginePath = useLichessBotStore((s) => s.setEnginePath);
@@ -39,6 +48,20 @@ export function LichessBotControls() {
   const listening = status === "listening" || status === "playing";
   const canChallenge = status === "listening";
   const canUpgrade = confirmText.trim().toUpperCase() === UPGRADE_CONFIRM_TEXT;
+  const isBotAccount = verifiedAccount?.isBot === true;
+  const canListen = hasToken && !!verifiedAccount && isBotAccount && !!enginePath;
+
+  useEffect(() => {
+    void refreshHasToken();
+  }, [refreshHasToken]);
+
+  // Auto-verify on mount and after a token change; same rationale as
+  // LichessControls' auto-verify effect.
+  useEffect(() => {
+    if (hasToken && !verifiedAccount && !verifyError) {
+      void verifyAccount();
+    }
+  }, [hasToken, verifiedAccount, verifyError, verifyAccount]);
 
   async function chooseEngine() {
     const picked = await open({ multiple: false });
@@ -46,8 +69,24 @@ export function LichessBotControls() {
     setEnginePath(picked);
   }
 
+  async function saveToken() {
+    if (!tokenInput.trim()) return;
+    await setToken(tokenInput);
+    setTokenInput("");
+    // Fresh token -> fresh verify. If the user hasn't upgraded this
+    // account yet, verify will report isBot=false and the UI shows the
+    // "Upgrade to Bot account" panel instead of the listen button.
+    await verifyAccount();
+  }
+
   async function upgrade() {
-    if (await upgradeToBotAccount()) setConfirmText("");
+    if (await upgradeToBotAccount()) {
+      setConfirmText("");
+      // After a successful upgrade, re-verify so the UI reflects the
+      // BOT title Lichess just applied. Without this, the "not a BOT
+      // account" refusal would persist until the next mount.
+      await verifyAccount();
+    }
   }
 
   async function browseBots() {
@@ -84,22 +123,56 @@ export function LichessBotControls() {
     <div className="lichess-controls">
       <h2>Bridge engine to Lichess (Bot API)</h2>
       <p className="hint">
-        Upgrading to a Bot account is <strong>irreversible</strong> -- a bot account can
-        never play rated games as a human again, nor be converted back. Only do this on an
-        account you're dedicating to running engines.
+        This mode uses its own bot-slot Lichess token, separate from the human slot in
+        Play-on-Lichess mode. Use a token from an account you have dedicated to running
+        engines — never your regular human account.
       </p>
-      <div className="lichess-token-field">
-        <input
-          type="text"
-          value={confirmText}
-          onChange={(e) => setConfirmText(e.target.value)}
-          placeholder={`Type "${UPGRADE_CONFIRM_TEXT}" to confirm`}
-          disabled={listening}
-        />
-        <button onClick={upgrade} disabled={!canUpgrade || listening}>
-          Upgrade to Bot account
-        </button>
-      </div>
+      {!hasToken ? (
+        <div className="lichess-token-field">
+          <input
+            type="password"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder="Lichess token for the BOT account (bot:play + challenge:write)"
+          />
+          <button onClick={saveToken} disabled={!tokenInput.trim()}>
+            Save bot token
+          </button>
+        </div>
+      ) : (
+        <div className="lichess-token-field">
+          <p className="lichess-token-status">
+            Bot token saved in the OS keychain
+            {verifiedAccount ? ` — verified as ${verifiedAccount.username}` : ""}
+            {verifiedAccount ? (isBotAccount ? " (BOT account)" : " (not a BOT account)") : ""}
+          </p>
+          <button onClick={clearToken} disabled={listening}>
+            Clear bot token
+          </button>
+        </div>
+      )}
+      {verifyError && <p className="load-error">{verifyError}</p>}
+      {hasToken && verifiedAccount && !isBotAccount && (
+        <>
+          <p className="hint">
+            This account is not yet a BOT. Upgrading is <strong>irreversible</strong> — a bot
+            account can never play rated games as a human again, nor be converted back. Only
+            do this on an account you're dedicating to running engines.
+          </p>
+          <div className="lichess-token-field">
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder={`Type "${UPGRADE_CONFIRM_TEXT}" to confirm`}
+              disabled={listening}
+            />
+            <button onClick={upgrade} disabled={!canUpgrade || listening}>
+              Upgrade to Bot account
+            </button>
+          </div>
+        </>
+      )}
 
       <button onClick={chooseEngine} disabled={listening}>
         {enginePath ? `Engine: ${deriveEngineIdentifier(enginePath)}` : "Choose engine binary…"}
@@ -116,7 +189,7 @@ export function LichessBotControls() {
         />
       </label>
       {!listening ? (
-        <button onClick={() => startListening()} disabled={!enginePath}>
+        <button onClick={() => startListening()} disabled={!canListen}>
           Start listening for challenges
         </button>
       ) : (

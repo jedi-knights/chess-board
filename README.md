@@ -85,6 +85,10 @@ This opens the app window.
 
 **To play against an engine:** click **Choose engine binary…** and pick your compiled UCI engine (chess-board remembers this choice across restarts, so you only need to do this once per engine), choose **Play as** White or Black, optionally adjust **Movetime (ms)**, then **Start game**. Click one of your pieces — its legal destination squares highlight — then click a highlighted square to move. The engine replies on its own; watch the **Status** line for its depth/score while it's thinking.
 
+**To play on Lichess** (Board API): switch to **Play on Lichess** in the View menu's Game Mode group, paste a Lichess personal-access token with the `board:play` scope into the **human slot** field, then paste a game id or URL and click **Connect**. The token is stored in the OS keychain, never in the app. chess-board verifies the token against `GET /api/account` — a BOT-titled account is refused here (put it in the Bot slot below instead).
+
+**To bridge a UCI engine to Lichess** (Bot API): switch to **Engine vs Lichess** in the same menu, paste a token from a Lichess account you have dedicated to running engines into the **bot slot** field. If that account is not yet a BOT, chess-board shows an **Upgrade to Bot account** panel — the upgrade is irreversible on Lichess's side. Pick your engine binary, click **Start listening for challenges**, and any challenge that arrives is auto-accepted and played by the engine. The two token slots are entirely separate: a token in the human slot cannot post through the Bot API and vice versa.
+
 Toggle **View: 2D / View: 3D** in the header to switch camera modes, and **Theme** to cycle system → light → dark.
 
 ## Examples
@@ -129,6 +133,7 @@ No environment variables or config files. Two things worth knowing about what th
 | File-read scope | `src-tauri/capabilities/default.json` grants read access only under `$HOME`, `$DOCUMENT`, `$DOWNLOAD`, `$DESKTOP` — not the whole filesystem | The "Open PGN file…" dialog can only read files under your common user directories |
 | Engine process spawning | **No** `shell:execute` capability is granted. `engine_start` (`src-tauri/src/engine.rs`) spawns the picked binary directly via `std::process::Command`, after checking the path is a real file | The engine path is arbitrary and chosen at runtime through the same native file dialog used for opening PGNs — that dialog is the trust boundary, not a pre-declared shell allowlist (which the `shell` plugin's capability model isn't built for anyway) |
 | Debug log | A plain-text `debug.log` in your OS's app log directory (e.g. `~/Library/Logs/com.jediknights.chessboard/debug.log` on macOS) — engine spawn/exit events (including captured stderr) from Rust, plus move/failure events from the frontend | Gives enough of a timeline to debug a crash after the fact, without needing DevTools open at the time. Cleared on every app launch and every "Start game" click, so it never grows across a long session |
+| Lichess tokens | Two separate OS-keychain entries — `lichess-human-token` for Play-on-Lichess (your regular account) and `lichess-bot-token` for Engine-vs-Lichess (a dedicated BOT account). Never persisted in the frontend store. Service name `com.jediknights.chessboard` on every platform | A BOT account can never make a human's moves and a human account can never post through the Bot API — Rust verifies each token's `title == "BOT"` on first use per slot and refuses cross-slot mismatches |
 
 ## Development
 
