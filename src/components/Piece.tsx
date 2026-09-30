@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, type JSX } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Group, Shape } from "three";
+import { DoubleSide, Group, Shape } from "three";
 import type { PieceOnSquare } from "../lib/chessRules";
 import { createGlyphTexture, getPieceGlyph } from "../lib/pieceGlyphs";
 import { getPieceStyle, type PieceStyle } from "../lib/pieceStyles";
@@ -123,17 +123,24 @@ function PieceGlyph({ type, color }: { type: PieceOnSquare["type"]; color: Piece
 
   return (
     // rotation=[-PI/2,0,0] tips the plane from its default XY orientation
-    // (facing +Z) to lie flat in the XZ plane facing +Y -- i.e. straight up
-    // at the fixed top-down 2D camera (see BoardScene's cameraPosition for
-    // cameraMode "2d"). This must hold for every piece, both colors, both
-    // POV settings -- the camera flips its `up` vector between white/black
-    // POV, but this plane's world-space rotation never does, and it must
-    // not start doing so (e.g. via billboarding). Do not change this
-    // rotation without re-verifying every piece still renders face-up, not
-    // edge-on or upside-down, in both POV settings.
+    // (facing +Z) to lie flat facing +Y -- straight up at the fixed
+    // top-down 2D camera. This is a fixed world-space transform, the same
+    // for every piece, both colors, both POV settings -- BoardScene's 2D
+    // camera flips its `up` vector between white/black POV, not this
+    // plane's rotation, and that's enough on its own for the glyph to
+    // read face-up and right-side-up in both POVs (verified live,
+    // tight-cropped on the pawn glyph specifically -- its silhouette is
+    // asymmetric enough to actually reveal a flip, unlike the rook/king/
+    // queen). side=DoubleSide guards the "visible at all" half of that:
+    // only one side of the plane is ever visible anyway, since the 2D
+    // camera is always directly above looking straight down, so there's
+    // no reason to risk the default FrontSide back-face-culling the
+    // texture to invisible over any future change to this rotation or the
+    // camera setup. Do not change this without re-verifying the pawn
+    // glyph face-up, ball-on-top, visible, in both POVs.
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
       <planeGeometry args={[0.75, 0.75]} />
-      <meshBasicMaterial map={texture} transparent alphaTest={0.05} />
+      <meshBasicMaterial map={texture} transparent alphaTest={0.05} side={DoubleSide} />
     </mesh>
   );
 }
