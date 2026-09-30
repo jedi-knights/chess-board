@@ -34,6 +34,11 @@ function App() {
   const gameModePreset = useGameModeStore((s) => s.preset);
 
   const [sideTab, setSideTab] = useState<SideTab>("config");
+  // Not persisted, deliberately -- this is a per-session "give me more
+  // board room right now" toggle, not a standing preference like the
+  // View menu's settings. Reopening the app should start from the normal
+  // layout.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   useEffect(() => {
     // Jump to the move log the moment a game actually starts, so the
     // user isn't left looking at the configuration panel (now locked
@@ -54,42 +59,56 @@ function App() {
           <BoardScene fen={fen} cameraMode={cameraMode} theme={theme} />
           <PlaybackControls />
         </div>
-        <aside className="side-panel">
-          <div className="side-tabs" role="tablist">
-            <button
-              role="tab"
-              aria-selected={sideTab === "config"}
-              className={sideTab === "config" ? "side-tab active" : "side-tab"}
-              onClick={() => setSideTab("config")}
-            >
-              Configuration
-            </button>
-            <button
-              role="tab"
-              aria-selected={sideTab === "moves"}
-              className={sideTab === "moves" ? "side-tab active" : "side-tab"}
-              onClick={() => setSideTab("moves")}
-            >
-              Move log
-            </button>
-          </div>
-          {/* CSS-hidden, not conditionally unmounted -- EngineControls and
-              the other mode panels hold their own local UI state (e.g.
-              which color to play as), and unmounting them on every tab
-              switch would silently reset it even though nothing the user
-              did should have changed it. */}
-          <div className={sideTab === "config" ? "side-tab-panel" : "side-tab-panel hidden"}>
-            {gameModePreset === "human-vs-engine" && <EngineControls />}
-            {gameModePreset === "human-vs-lichess" && <LichessControls />}
-            {gameModePreset === "engine-vs-lichess" && <LichessBotControls />}
-            {gameModePreset === "engine-vs-engine" && <EngineVsEngineControls />}
-            <EngineOptions />
-            <AnalysisPanel />
-            <GameLoader />
-          </div>
-          <div className={sideTab === "moves" ? "side-tab-panel" : "side-tab-panel hidden"}>
-            <MoveList />
-            <MoveLog />
+        <aside className={sidebarCollapsed ? "side-panel collapsed" : "side-panel"}>
+          <button
+            className="side-panel-toggle"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!sidebarCollapsed}
+          >
+            {sidebarCollapsed ? "◂" : "▸"}
+          </button>
+          {/* CSS-hidden, not conditionally unmounted -- same reasoning as
+              the tab panels below: collapsing shouldn't reset anything
+              (e.g. a running game's controls, an in-progress path pick)
+              just because the board needed more room for a moment. */}
+          <div className="side-panel-content">
+            <div className="side-tabs" role="tablist">
+              <button
+                role="tab"
+                aria-selected={sideTab === "config"}
+                className={sideTab === "config" ? "side-tab active" : "side-tab"}
+                onClick={() => setSideTab("config")}
+              >
+                Configuration
+              </button>
+              <button
+                role="tab"
+                aria-selected={sideTab === "moves"}
+                className={sideTab === "moves" ? "side-tab active" : "side-tab"}
+                onClick={() => setSideTab("moves")}
+              >
+                Move log
+              </button>
+            </div>
+            {/* CSS-hidden, not conditionally unmounted -- EngineControls and
+                the other mode panels hold their own local UI state (e.g.
+                which color to play as), and unmounting them on every tab
+                switch would silently reset it even though nothing the user
+                did should have changed it. */}
+            <div className={sideTab === "config" ? "side-tab-panel" : "side-tab-panel hidden"}>
+              {gameModePreset === "human-vs-engine" && <EngineControls />}
+              {gameModePreset === "human-vs-lichess" && <LichessControls />}
+              {gameModePreset === "engine-vs-lichess" && <LichessBotControls />}
+              {gameModePreset === "engine-vs-engine" && <EngineVsEngineControls />}
+              <EngineOptions />
+              <AnalysisPanel />
+              <GameLoader />
+            </div>
+            <div className={sideTab === "moves" ? "side-tab-panel" : "side-tab-panel hidden"}>
+              <MoveList />
+              <MoveLog />
+            </div>
           </div>
         </aside>
       </main>
