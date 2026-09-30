@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { AnalysisPanel } from "./components/AnalysisPanel";
 import { BoardScene } from "./components/BoardScene";
 import { EngineControls } from "./components/EngineControls";
@@ -16,6 +17,8 @@ import { GAME_MODE_LABELS, useGameModeStore } from "./state/gameModeStore";
 import { useGameStore } from "./state/gameStore";
 import "./App.css";
 
+type SideTab = "config" | "moves";
+
 function App() {
   const theme = useAppliedTheme();
   // Game mode, camera mode, POV, board palette, piece style, and theme
@@ -26,8 +29,20 @@ function App() {
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
   const cameraMode = useGameStore((s) => s.cameraMode);
+  const mode = useGameStore((s) => s.mode);
   const fen = fenAtPly(plies, ply);
   const gameModePreset = useGameModeStore((s) => s.preset);
+
+  const [sideTab, setSideTab] = useState<SideTab>("config");
+  useEffect(() => {
+    // Jump to the move log the moment a game actually starts, so the
+    // user isn't left looking at the configuration panel (now locked
+    // anyway, see the native View menu's game-mode group) while moves
+    // are happening off-screen.
+    if (mode === "play") {
+      setSideTab("moves");
+    }
+  }, [mode]);
 
   return (
     <div className="app">
@@ -40,15 +55,42 @@ function App() {
           <PlaybackControls />
         </div>
         <aside className="side-panel">
-          {gameModePreset === "human-vs-engine" && <EngineControls />}
-          {gameModePreset === "human-vs-lichess" && <LichessControls />}
-          {gameModePreset === "engine-vs-lichess" && <LichessBotControls />}
-          {gameModePreset === "engine-vs-engine" && <EngineVsEngineControls />}
-          <EngineOptions />
-          <AnalysisPanel />
-          <GameLoader />
-          <MoveList />
-          <MoveLog />
+          <div className="side-tabs" role="tablist">
+            <button
+              role="tab"
+              aria-selected={sideTab === "config"}
+              className={sideTab === "config" ? "side-tab active" : "side-tab"}
+              onClick={() => setSideTab("config")}
+            >
+              Configuration
+            </button>
+            <button
+              role="tab"
+              aria-selected={sideTab === "moves"}
+              className={sideTab === "moves" ? "side-tab active" : "side-tab"}
+              onClick={() => setSideTab("moves")}
+            >
+              Move log
+            </button>
+          </div>
+          {/* CSS-hidden, not conditionally unmounted -- EngineControls and
+              the other mode panels hold their own local UI state (e.g.
+              which color to play as), and unmounting them on every tab
+              switch would silently reset it even though nothing the user
+              did should have changed it. */}
+          <div className={sideTab === "config" ? "side-tab-panel" : "side-tab-panel hidden"}>
+            {gameModePreset === "human-vs-engine" && <EngineControls />}
+            {gameModePreset === "human-vs-lichess" && <LichessControls />}
+            {gameModePreset === "engine-vs-lichess" && <LichessBotControls />}
+            {gameModePreset === "engine-vs-engine" && <EngineVsEngineControls />}
+            <EngineOptions />
+            <AnalysisPanel />
+            <GameLoader />
+          </div>
+          <div className={sideTab === "moves" ? "side-tab-panel" : "side-tab-panel hidden"}>
+            <MoveList />
+            <MoveLog />
+          </div>
         </aside>
       </main>
     </div>
