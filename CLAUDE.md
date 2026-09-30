@@ -310,6 +310,42 @@ this file and the human-facing docs.
   the endpoint early is a wasted round-trip but not otherwise harmful (Lichess
   400s a premature claim); the gate exists to make that misuse unlikely from the
   UI, not to enforce a security invariant.
+- **`pump_ndjson_stream` buffers *bytes*, splits on `b'\n'`, and decodes UTF-8 per
+  whole line.** Pre-PR-6 the pump decoded each raw chunk with `from_utf8_lossy` and
+  then split on `'\n'`; that corrupted any multi-byte UTF-8 codepoint that straddled
+  a chunk boundary (a common shape for user-supplied challenge messages or usernames
+  with accents). `pop_lines` is the byte-buffered helper; the caller is `pump_ndjson_stream`.
+  The buffer's tail intentionally holds partial bytes for the next chunk. Do not
+  revert to per-chunk decoding.
+- **A stream that produces no data for 20 s is treated as dead.** Lichess sends `\n`
+  keep-alive lines on quiet streams, so 20 s of *total* silence means the underlying
+  connection died in a way that produced no I/O error (classic TCP half-open).
+  `pump_ndjson_stream` wraps `stream.next()` in `tokio::time::timeout` and returns
+  `PumpOutcome::Retry("no data for 20s")` on elapsed. `stream_with_reconnect` then
+  sleeps-and-retries via exponential backoff instead of emitting `exit_event` --
+  `movesToApply` and `applyDerivedControllers` are idempotent, so the reconnect
+  re-syncs from a fresh `gameFull` transparently.
+- **Streams reconnect indefinitely with exponential backoff (1 → 2 → 4 → 8 → 16 → 30 s
+  cap); one-shot POSTs retry once after a 60 s pause on 429.** `RetrySchedule` in
+  `lichess.rs` owns the backoff progression; `post_with_retry` owns the 60 s
+  rate-limit recovery. Transient stream failures never emit `exit_event` -- only
+  unrecoverable HTTP statuses (401, 404, non-429 4xx/5xx) do, because those can't
+  be recovered from by retrying. The frontend's exit-event handlers still fail the
+  connection on unrecoverable exits; transient drops are silent and self-healing.
+- **Every one-shot authenticated POST goes through `post_with_retry`.** It acquires
+  a static `outbound_mutex` (`Arc<tokio::sync::Mutex<()>>` via `OnceLock`) for the
+  duration of the request, so a burst of user actions (rapid draw offers, repeated
+  seek clicks) can't race itself into a 429 unnecessarily. On 429, the helper sleeps
+  60 s *while still holding the mutex*, so other POSTs also pause -- avoiding a
+  cascade of 429s from queued requests firing back-to-back. The seek command is the
+  one exception: it's a long-poll, holding the mutex would block everything else,
+  so its request runs outside the mutex.
+- **Two reqwest clients, one connect timeout across both, only one-shot requests get
+  a total timeout.** `new_client()` (5 s connect + 30 s total) is for one-shot POSTs
+  and GETs; `new_stream_client()` (5 s connect only, no total timeout) is for
+  streaming requests, because setting a total timeout on a stream would kill it after
+  N seconds regardless of activity. The 20 s idle-timeout inside `pump_ndjson_stream`
+  handles the half-open-connection case for streams instead.
 - **`gameStore` knows nothing about the engine, Lichess, or which controller is active.**
   `attemptMove(from, to, promotion?)` is the single append path for a human's click, an
   applied engine `bestmove`, and an incoming Lichess move alike — it just validates via

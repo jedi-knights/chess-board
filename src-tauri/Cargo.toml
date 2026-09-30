@@ -32,10 +32,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Only for `.next()` on reqwest's byte stream while reading the NDJSON game
 # stream line by line -- not pulling in the full `futures` crate for it.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-# Just for tokio::spawn/JoinHandle to run the game-stream reader alongside
-# an async command -- schedules onto tauri's own ambient runtime, not a
-# second one, so no rt-multi-thread/full feature is needed here.
-tokio = { version = "1", features = ["rt"] }
+# `rt` + `time` + `sync`: rt for tokio::spawn/JoinHandle onto tauri's own
+# ambient runtime (no separate runtime), time for the 20 s keep-alive
+# timeout + exponential-backoff sleeps + 60 s 429-retry pause, sync for
+# the static outbound mutex that serializes authenticated POSTs.
+tokio = { version = "1", features = ["rt", "time", "sync"] }
 # Cross-platform OS keychain (macOS Keychain / Windows Credential Manager /
 # Linux Secret Service) for the Lichess personal access token -- deliberately
 # not persisted via zustand's localStorage-backed store, since it's a bearer
