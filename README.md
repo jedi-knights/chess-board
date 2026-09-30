@@ -8,6 +8,11 @@ A Tauri + Three.js desktop app for visualizing and stepping through chess games 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <p align="center">
+  <img src="docs/screenshot.png" alt="chess-board's 3D view: an angled wooden board with the starting position set up, and the sidebar's Configuration tab showing the Human vs Engine panel with engine binary, side, and movetime controls" width="400">
+  <img src="docs/screenshot-movelog.png" alt="The same app after loading a short Ruy Lopez opening, now on the sidebar's Move log tab: the board shows the resulting position, with a clickable move-by-move navigator and a timestamped move log alongside it" width="400">
+</p>
+
+<p align="center">
   <a href="#features">Features</a> ·
   <a href="#requirements">Requirements</a> ·
   <a href="#installation">Installation</a> ·
