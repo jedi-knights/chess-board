@@ -13,6 +13,7 @@ pub fn run() {
         .manage(engine::BlackEngine(engine::new_shared_state()))
         .manage(lichess::LichessConnection(lichess::new_shared_lichess_state()))
         .manage(lichess::LichessEventConnection(lichess::new_shared_lichess_state()))
+        .manage(lichess::LichessSeekConnection(lichess::new_shared_lichess_state()))
         .manage(lichess::new_shared_account_cache())
         .setup(|app| {
             // A fresh debug.log per session, per the mandate that it must
@@ -63,7 +64,11 @@ pub fn run() {
             lichess::lichess_challenge_decline,
             lichess::lichess_bot_upgrade,
             lichess::lichess_bot_online,
-            lichess::lichess_challenge_bot
+            lichess::lichess_challenge_bot,
+            lichess::lichess_challenge_user,
+            lichess::lichess_challenge_ai,
+            lichess::lichess_seek,
+            lichess::lichess_stop_seek
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

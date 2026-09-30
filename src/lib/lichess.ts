@@ -17,6 +17,12 @@ export interface LichessMoveUpdate {
    * on every state update anyway. Absent when there is no increment. */
   wincMs: number | null;
   bincMs: number | null;
+  /** Lichess player id of the white side, only present on the initial
+   * `gameFull` line -- subsequent `gameState` lines don't carry it. Used
+   * (compared against the verified account id) to derive which color the
+   * *human* plays, replacing the pre-PR-4 manual "Play as" picker. */
+  whiteId: string | null;
+  blackId: string | null;
 }
 
 /**
@@ -58,7 +64,16 @@ function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | nul
     btimeMs: readOptionalNumber(state, "btime"),
     wincMs: readOptionalNumber(state, "winc"),
     bincMs: readOptionalNumber(state, "binc"),
+    whiteId: null,
+    blackId: null,
   };
+}
+
+function readPlayerId(obj: Record<string, unknown>, key: string): string | null {
+  const value = obj[key];
+  if (typeof value !== "object" || value === null) return null;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === "string" ? id : null;
 }
 
 /**
@@ -81,7 +96,16 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
   const obj = json as Record<string, unknown>;
 
   if (obj.type === "gameFull" && typeof obj.state === "object" && obj.state !== null) {
-    return normalizeState(obj.state as Record<string, unknown>);
+    const state = normalizeState(obj.state as Record<string, unknown>);
+    if (!state) return null;
+    // gameFull's top level carries `white: {id, ...}` and `black: {id, ...}`;
+    // gameState lines don't. Extracting them here means callers can
+    // derive the human's color from a single seam.
+    return {
+      ...state,
+      whiteId: readPlayerId(obj, "white"),
+      blackId: readPlayerId(obj, "black"),
+    };
   }
   if (obj.type === "gameState") {
     return normalizeState(obj);

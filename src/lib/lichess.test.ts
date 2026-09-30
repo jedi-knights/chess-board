@@ -31,6 +31,8 @@ describe("parseLichessLine", () => {
       btimeMs: 58000,
       wincMs: 2000,
       bincMs: 2000,
+      whiteId: null,
+      blackId: null,
     });
   });
 
@@ -51,6 +53,8 @@ describe("parseLichessLine", () => {
       btimeMs: 55432,
       wincMs: 3000,
       bincMs: 3000,
+      whiteId: null,
+      blackId: null,
     });
   });
 
@@ -63,7 +67,45 @@ describe("parseLichessLine", () => {
       btimeMs: null,
       wincMs: null,
       bincMs: null,
+      whiteId: null,
+      blackId: null,
     });
+  });
+
+  it("surfaces gameFull's white/black ids for the human-color-derivation seam", () => {
+    const line = JSON.stringify({
+      type: "gameFull",
+      id: "abcd1234",
+      white: { id: "alice", name: "Alice" },
+      black: { id: "bob", name: "Bob" },
+      state: {
+        type: "gameState",
+        moves: "",
+        status: "started",
+        wtime: 60000,
+        btime: 60000,
+        winc: 2000,
+        binc: 2000,
+      },
+    });
+    const parsed = parseLichessLine(line);
+    expect(parsed?.whiteId).toBe("alice");
+    expect(parsed?.blackId).toBe("bob");
+  });
+
+  it("returns null for missing white/black objects on gameFull", () => {
+    const line = JSON.stringify({
+      type: "gameFull",
+      id: "abcd1234",
+      state: {
+        type: "gameState",
+        moves: "",
+        status: "started",
+      },
+    });
+    const parsed = parseLichessLine(line);
+    expect(parsed?.whiteId).toBeNull();
+    expect(parsed?.blackId).toBeNull();
   });
 
   it("returns null for a chatLine event", () => {
