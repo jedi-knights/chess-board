@@ -7,7 +7,7 @@ export function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
 }
 
-function clampByte(v: number): number {
+export function clampByte(v: number): number {
   return Math.max(0, Math.min(255, Math.round(v)));
 }
 
@@ -23,6 +23,7 @@ const GRAIN_LINES = 18;
  * no licensing question, matches the app's existing "materials are code,
  * not assets" approach).
  */
+/* v8 ignore start -- DOM canvas API unavailable in vitest's node test environment; see vite.config.ts */
 export function createWoodTexture(baseColor: string): CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = TEXTURE_SIZE;
@@ -59,3 +60,4 @@ export function createWoodTexture(baseColor: string): CanvasTexture {
   texture.wrapT = RepeatWrapping;
   return texture;
 }
+/* v8 ignore stop */

@@ -36,6 +36,7 @@ const TEXTURE_SIZE = 128;
  * (white pieces: white fill, dark outline; black pieces: dark fill, light
  * outline).
  */
+/* v8 ignore start -- DOM canvas API unavailable in vitest's node test environment; see vite.config.ts */
 export function createGlyphTexture(
   glyph: string,
   fill: string,
@@ -84,3 +85,4 @@ export function createGlyphTexture(
   texture.needsUpdate = true;
   return texture;
 }
+/* v8 ignore stop */

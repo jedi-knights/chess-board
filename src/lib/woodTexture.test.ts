@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hexToRgb } from "./woodTexture";
+import { clampByte, hexToRgb } from "./woodTexture";
 
 describe("hexToRgb", () => {
   it("parses a hex color into its RGB components", () => {
@@ -13,5 +13,23 @@ describe("hexToRgb", () => {
 
   it("works without a leading #", () => {
     expect(hexToRgb("8B5A2B")).toEqual({ r: 0x8b, g: 0x5a, b: 0x2b });
+  });
+});
+
+describe("clampByte", () => {
+  it("clamps negative values up to 0", () => {
+    expect(clampByte(-5)).toBe(0);
+  });
+
+  it("clamps values above 255 down to 255", () => {
+    expect(clampByte(300)).toBe(255);
+  });
+
+  it("rounds a fractional in-range value to the nearest integer", () => {
+    expect(clampByte(128.6)).toBe(129);
+  });
+
+  it("leaves an in-range integer untouched", () => {
+    expect(clampByte(200)).toBe(200);
   });
 });

@@ -1,10 +1,55 @@
-import { describe, expect, it } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Ply } from "../lib/chessRules";
-import { movesToApply, pendingMoveToSend } from "./lichessStore";
+import { useGameStore } from "./gameStore";
+import { movesToApply, pendingMoveToSend, useLichessStore } from "./lichessStore";
+
+// Same rationale as engineStore.test.ts: `invoke`/`listen` are Tauri's IPC
+// boundary, a genuine system edge -- mocking them here is not a same-team
+// collaborator mock. Assertions go through lichessStore's/gameStore's own
+// public state, never internal call traces alone.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+
+const mockedInvoke = invoke as unknown as ReturnType<typeof vi.fn>;
+const mockedListen = listen as unknown as ReturnType<typeof vi.fn>;
+
+const listeners = new Map<string, (event: { payload: unknown }) => void>();
+
+function emit(eventName: string, payload: unknown) {
+  listeners.get(eventName)?.({ payload });
+}
 
 function ply(uci: string, color: "w" | "b"): Ply {
   return { san: uci, uci, fenBefore: "", fenAfter: "", color };
 }
+
+beforeEach(() => {
+  // Deliberately not cleared -- `installListenersOnce` only ever calls
+  // `listen()` once per module lifetime, same as production; see
+  // engineStore.test.ts for the same reasoning.
+  mockedListen.mockImplementation(
+    (eventName: string, cb: (event: { payload: unknown }) => void) => {
+      listeners.set(eventName, cb);
+      return Promise.resolve(() => listeners.delete(eventName));
+    },
+  );
+  mockedInvoke.mockReset();
+  mockedInvoke.mockResolvedValue(undefined);
+
+  useGameStore.getState().loadGame([]);
+  useGameStore.getState().startNewGame({ w: "human", b: "human" });
+  useGameStore.getState().enterPlayMode();
+
+  useLichessStore.setState({
+    hasToken: false,
+    gameId: null,
+    status: "idle",
+    errorMessage: null,
+    lastSentUci: null,
+  });
+});
 
 describe("pendingMoveToSend", () => {
   it("returns null when there are no plies yet", () => {
@@ -42,14 +87,190 @@ describe("movesToApply", () => {
   });
 
   it("returns nothing when Lichess echoes back a move already applied locally", () => {
-    // Regression: this is exactly the case that broke when `knownMoveCount`
-    // was tracked separately instead of diffing against the live ply count
-    // -- sending the human's own move to Lichess, then receiving it echoed
-    // straight back in the next stream line, must not re-append it.
     expect(movesToApply(["e2e4"], 1)).toEqual([]);
   });
 
   it("returns nothing when there are no new moves at all", () => {
     expect(movesToApply([], 0)).toEqual([]);
+  });
+});
+
+describe("refreshHasToken / setToken / clearToken", () => {
+  it("refreshHasToken reflects whatever the backend reports", async () => {
+    mockedInvoke.mockResolvedValueOnce(true);
+    await useLichessStore.getState().refreshHasToken();
+    expect(useLichessStore.getState().hasToken).toBe(true);
+  });
+
+  it("refreshHasToken defaults to false when the backend call fails", async () => {
+    mockedInvoke.mockRejectedValueOnce(new Error("no keychain"));
+    await useLichessStore.getState().refreshHasToken();
+    expect(useLichessStore.getState().hasToken).toBe(false);
+  });
+
+  it("setToken stores the token and flips hasToken", async () => {
+    await useLichessStore.getState().setToken("secret-token");
+    expect(useLichessStore.getState().hasToken).toBe(true);
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_token_set", { token: "secret-token" });
+  });
+
+  it("clearToken removes the token and flips hasToken back", async () => {
+    useLichessStore.setState({ hasToken: true });
+    await useLichessStore.getState().clearToken();
+    expect(useLichessStore.getState().hasToken).toBe(false);
+  });
+});
+
+describe("connect", () => {
+  it("re-entrancy guard: a second call while one is already connecting is a no-op", () => {
+    void useLichessStore.getState().connect("game-1");
+    expect(useLichessStore.getState().status).toBe("connecting");
+    void useLichessStore.getState().connect("game-2");
+    expect(useLichessStore.getState().gameId).toBe("game-1");
+  });
+
+  it("success path: status becomes connected and gameStore unlocks moves", async () => {
+    useGameStore.getState().exitPlayMode();
+    await useLichessStore.getState().connect("game-1");
+    expect(useLichessStore.getState().status).toBe("connected");
+    expect(useGameStore.getState().mode).toBe("play");
+  });
+
+  it("failure path: status becomes error and gameStore exits play mode", async () => {
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_stream_game"
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(undefined),
+    );
+    await useLichessStore.getState().connect("game-1");
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("network down");
+    expect(useGameStore.getState().mode).toBe("replay");
+  });
+});
+
+describe("disconnect", () => {
+  it("resets to idle, clears the game id, and exits play mode", async () => {
+    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().disconnect();
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("idle");
+    expect(state.gameId).toBeNull();
+    expect(useGameStore.getState().mode).toBe("replay");
+  });
+});
+
+describe("lichess-game-stream listener", () => {
+  it("applies incoming moves not yet reflected locally", async () => {
+    await useLichessStore.getState().connect("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({ type: "gameState", moves: "e2e4", status: "started" }),
+    );
+
+    expect(useGameStore.getState().plies.map((p) => p.uci)).toEqual(["e2e4"]);
+  });
+
+  it("a terminal status ends the game and stops it backend-side", async () => {
+    await useLichessStore.getState().connect("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({ type: "gameState", moves: "", status: "resign" }),
+    );
+
+    expect(useLichessStore.getState().status).toBe("gameOver");
+    expect(useGameStore.getState().mode).toBe("replay");
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_stop_game");
+  });
+
+  it("an illegal move from Lichess fails the connection", async () => {
+    // From the starting position, e2e5 is not a legal pawn move.
+    await useLichessStore.getState().connect("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({ type: "gameState", moves: "e2e5", status: "started" }),
+    );
+
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("illegal move");
+  });
+});
+
+describe("lichess-game-exit listener", () => {
+  it("fails the connection when it was actually connected", async () => {
+    await useLichessStore.getState().connect("game-1");
+
+    emit("lichess-game-exit", "stream closed by server");
+
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toBe("stream closed by server");
+  });
+
+  it("is a no-op when not currently connected (e.g. after a deliberate disconnect)", async () => {
+    await useLichessStore.getState().connect("game-1");
+    await useLichessStore.getState().disconnect();
+
+    emit("lichess-game-exit", "late, stale exit event");
+
+    expect(useLichessStore.getState().status).toBe("idle");
+  });
+});
+
+describe("maybeSendHumanMove (via gameStore subscription)", () => {
+  it("sends the human's own move to Lichess once connected", async () => {
+    useGameStore.getState().startNewGame({ w: "human", b: "lichess" });
+    useGameStore.getState().exitPlayMode();
+    await useLichessStore.getState().connect("game-1");
+    mockedInvoke.mockClear();
+
+    useGameStore.getState().attemptMove("e2", "e4");
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_make_move", {
+      gameIdOrUrl: "game-1",
+      uciMove: "e2e4",
+    });
+    expect(useLichessStore.getState().lastSentUci).toBe("e2e4");
+  });
+
+  it("fails the connection if sending the move itself rejects", async () => {
+    useGameStore.getState().startNewGame({ w: "human", b: "lichess" });
+    useGameStore.getState().exitPlayMode();
+    await useLichessStore.getState().connect("game-1");
+    mockedInvoke.mockImplementation((cmd: string) =>
+      cmd === "lichess_make_move"
+        ? Promise.reject(new Error("lichess unreachable"))
+        : Promise.resolve(undefined),
+    );
+
+    useGameStore.getState().attemptMove("e2", "e4");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const state = useLichessStore.getState();
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("lichess unreachable");
+  });
+
+  it("does not resend a move that was just received from the opponent", async () => {
+    useGameStore.getState().startNewGame({ w: "lichess", b: "human" });
+    useGameStore.getState().exitPlayMode();
+    await useLichessStore.getState().connect("game-1");
+    mockedInvoke.mockClear();
+
+    // White's move arrives via the stream, not from this human -- the
+    // ply's color ("w") doesn't match the human's side ("b"), so nothing
+    // should be sent back to Lichess for it.
+    useGameStore.getState().attemptMove("e2", "e4");
+
+    expect(mockedInvoke).not.toHaveBeenCalledWith(
+      "lichess_make_move",
+      expect.anything(),
+    );
   });
 });

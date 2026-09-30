@@ -122,6 +122,75 @@ describe("selectSquare", () => {
   });
 });
 
+describe("playback navigation", () => {
+  beforeEach(() => {
+    useGameStore.getState().attemptMove("e2", "e4");
+    useGameStore.getState().attemptMove("e7", "e5");
+  });
+
+  it("stepBackward moves back one ply and stepForward moves forward one ply", () => {
+    useGameStore.getState().stepBackward();
+    expect(useGameStore.getState().ply).toBe(1);
+    useGameStore.getState().stepForward();
+    expect(useGameStore.getState().ply).toBe(2);
+  });
+
+  it("stepBackward at ply 0 is a no-op", () => {
+    useGameStore.getState().goToStart();
+    useGameStore.getState().stepBackward();
+    expect(useGameStore.getState().ply).toBe(0);
+  });
+
+  it("stepForward at the end is a no-op", () => {
+    useGameStore.getState().goToEnd();
+    useGameStore.getState().stepForward();
+    expect(useGameStore.getState().ply).toBe(2);
+  });
+
+  it("goToStart and goToEnd jump to the boundaries", () => {
+    useGameStore.getState().goToStart();
+    expect(useGameStore.getState().ply).toBe(0);
+    useGameStore.getState().goToEnd();
+    expect(useGameStore.getState().ply).toBe(2);
+  });
+
+  it("goToPly clamps out-of-range requests to the valid range", () => {
+    useGameStore.getState().goToPly(-5);
+    expect(useGameStore.getState().ply).toBe(0);
+    useGameStore.getState().goToPly(999);
+    expect(useGameStore.getState().ply).toBe(2);
+  });
+});
+
+describe("cosmetic setters", () => {
+  it("setCameraMode updates cameraMode", () => {
+    useGameStore.getState().setCameraMode("2d");
+    expect(useGameStore.getState().cameraMode).toBe("2d");
+  });
+
+  it("setLoadError stores and clears a load error message", () => {
+    useGameStore.getState().setLoadError("bad PGN");
+    expect(useGameStore.getState().loadError).toBe("bad PGN");
+    useGameStore.getState().setLoadError(null);
+    expect(useGameStore.getState().loadError).toBeNull();
+  });
+
+  it("setPlaybackDelayMs updates playbackDelayMs", () => {
+    useGameStore.getState().setPlaybackDelayMs(2500);
+    expect(useGameStore.getState().playbackDelayMs).toBe(2500);
+  });
+});
+
+describe("clearSelection", () => {
+  it("clears a pending selection directly, without needing a second click", () => {
+    useGameStore.getState().selectSquare("e2");
+    expect(useGameStore.getState().selectedSquare).toBe("e2");
+    useGameStore.getState().clearSelection();
+    expect(useGameStore.getState().selectedSquare).toBeNull();
+    expect(useGameStore.getState().legalDestinationSquares).toEqual([]);
+  });
+});
+
 describe("attemptMove", () => {
   it("applies a legal move and returns true", () => {
     const applied = useGameStore.getState().attemptMove("e2", "e4");
