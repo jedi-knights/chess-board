@@ -27,6 +27,69 @@ export type LichessBotStatus = "idle" | "listening" | "playing" | "error";
  * tags every call with the string discriminator. */
 const BOT_SLOT = "bot" as const;
 
+/** How long to hide a bot after a decline, when Lichess doesn't tell
+ * us the exact rate-limit window. 24 h matches the `bot.vsBot.day`
+ * key's own daily reset cadence; a shorter TTL would surface
+ * known-dead opponents to the user again before their quota resets,
+ * a longer one would hide a bot that's since freed up. */
+const DEFAULT_DECLINE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** How long to hide a bot that refused bot-vs-bot challenges as a
+ * policy (`noBot` decline reason / "I'm not accepting challenges
+ * from bots." text). Set to one year rather than Infinity so the
+ * entry eventually ages out in the pathological case where the bot
+ * operator reconfigures their account to accept bots -- but
+ * practically "forever" from the user's perspective. */
+const NO_BOT_DECLINE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** Detects whether a decline reason indicates a policy refusal of
+ * bot-vs-bot challenges, as opposed to a rate-limit or variant
+ * objection. Matches both the structured enum tag (`noBot`) and the
+ * human-readable text Lichess surfaces by default when a bot sends
+ * the reason, so this works whether the account stream delivered us
+ * the code or the pre-formatted sentence. */
+export function isNoBotPolicyDecline(reason: string | null): boolean {
+  if (!reason) return false;
+  if (reason === "noBot") return true;
+  const normalized = reason.toLowerCase();
+  return (
+    normalized.includes("challenges from bots") ||
+    normalized.includes("challenges from bot accounts")
+  );
+}
+
+/** Adds-or-refreshes an entry in the declined-bots list. If the
+ * username is already there, bumps its `expiresAtMs` to the later of
+ * the two (new attempt resets the clock, same shape as a sliding TTL).
+ * Also prunes expired entries so the list doesn't grow unboundedly
+ * across months of play. */
+function upsertDeclinedBot(
+  current: Array<{ username: string; expiresAtMs: number }>,
+  username: string,
+  ttlMs: number,
+): Array<{ username: string; expiresAtMs: number }> {
+  const now = Date.now();
+  const alive = current.filter((e) => e.expiresAtMs > now);
+  const existing = alive.find((e) => e.username === username);
+  const expiresAtMs = Math.max(existing?.expiresAtMs ?? 0, now + ttlMs);
+  const without = alive.filter((e) => e.username !== username);
+  return [...without, { username, expiresAtMs }];
+}
+
+/** Parses `ratelimit.seconds` out of a Lichess-rejection error string
+ * like `lichess rejected ...: 400 Bad Request {...,"ratelimit":{"key":
+ * "bot.vsBot.day","seconds":21164}}`. Returns `null` when the field
+ * isn't present, which is the common case (any other 400 shape).
+ * Regex rather than full JSON parse because the whole string is
+ * `prefix + " " + jsonBlob` -- splitting out the JSON is more
+ * fragile than a direct field match. */
+export function parseRateLimitSeconds(errorMessage: string): number | null {
+  const match = errorMessage.match(/"seconds"\s*:\s*(\d+)/);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
 interface LichessBotStoreState {
   /** Whether a bot-slot token is currently stored in the OS keychain. */
   hasToken: boolean;
@@ -76,15 +139,24 @@ interface LichessBotStoreState {
    * auto-decline bot-vs-bot. `username` is the bot that declined,
    * for the UI's "Alice declined: ..." phrasing. */
   lastOutgoingChallengeDecline: { username: string | null; reason: string | null } | null;
-  /** Session-scoped set of bot usernames we've already tried and been
-   * rejected by -- either via a `challengeDeclined` event or a 400
-   * from `lichess_challenge_bot` (rate-limited, offline, bots that
-   * refuse bot-vs-bot, etc). The Browse-Online-Bots list is filtered
-   * through this so the user doesn't re-click the same dead ends.
-   * Deliberately not persisted: a bot that declined earlier today
-   * may be fresh after Lichess's daily rate window resets, and
-   * remembering across restarts would hide them permanently. */
-  declinedBotUsernames: string[];
+  /** Bot usernames we've already tried and been rejected by, with a
+   * per-entry expiry timestamp (epoch ms). Populated from two sources:
+   *   - `challengeDeclined` events on our account stream (bot said no)
+   *   - 4xx responses from `lichess_challenge_bot` (rate limit, offline,
+   *     API-level refuse)
+   * The Browse-Online-Bots list is filtered through this so the user
+   * doesn't re-click the same dead ends. **Persisted across sessions**
+   * so a known-rate-limited bot stays hidden through a dev-server
+   * restart or an overnight close -- a dev-mode Rust rebuild shouldn't
+   * surface maia1 again when the user already learned it's capped.
+   *
+   * Entries have a TTL (default 24 h, matching Lichess's daily rate
+   * window) so a bot that was limited yesterday reappears in the list
+   * once its quota resets. When the Lichess 400 response includes a
+   * `ratelimit.seconds` field, that exact value is used; otherwise
+   * the default kicks in. Expired entries are purged lazily on each
+   * filter pass and on store rehydrate. */
+  declinedBots: Array<{ username: string; expiresAtMs: number }>;
 
   refreshHasToken: () => Promise<void>;
   setToken: (token: string) => Promise<void>;
@@ -110,9 +182,11 @@ interface LichessBotStoreState {
   clearOutgoingChallengeDecline: () => void;
   /** Called when a `lichess_challenge_bot` POST fails with any status
    * -- rate limit, 400 Bad Request, offline opponent. Adds the
-   * username to the session-scoped decline set so the list filters
-   * it out on next render. */
-  recordBotChallengeFailure: (username: string) => void;
+   * username to the declined-bots list with an expiry timestamp.
+   * `rateLimitSeconds` (when present, parsed from Lichess's response
+   * via `parseRateLimitSeconds`) sets a precise expiry; otherwise the
+   * default 24 h TTL applies. */
+  recordBotChallengeFailure: (username: string, rateLimitSeconds?: number) => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
    * doc comment. The caller (the UI) is responsible for a separate,
    * explicit confirmation step before calling this. Returns whether it
@@ -481,16 +555,23 @@ function routeAccountEvent(event: LichessAccountEvent) {
       const isOutgoing = myId !== null && event.challengerId === myId;
       if (isOutgoing) {
         const username = event.destUserName ?? event.destUserId;
-        const prevSet = useLichessBotStore.getState().declinedBotUsernames;
-        const nextSet =
-          username && !prevSet.includes(username) ? [...prevSet, username] : prevSet;
-        useLichessBotStore.setState({
+        // A `noBot` policy refusal is permanent-ish (bot operator opted
+        // out of bot-vs-bot play) -- hide for ~a year rather than a
+        // day. Rate-limit declines ("later", "generic" + ratelimit
+        // body) and variant/time-control objections stay on the 24 h
+        // default because they're transient.
+        const ttlMs = isNoBotPolicyDecline(event.reason)
+          ? NO_BOT_DECLINE_TTL_MS
+          : DEFAULT_DECLINE_TTL_MS;
+        useLichessBotStore.setState((state) => ({
           lastOutgoingChallengeDecline: {
             username,
             reason: event.reason,
           },
-          declinedBotUsernames: nextSet,
-        });
+          declinedBots: username
+            ? upsertDeclinedBot(state.declinedBots, username, ttlMs)
+            : state.declinedBots,
+        }));
       }
       logDebug(
         `challenge ${event.challengeId} declined${event.reason ? ` (${event.reason})` : ""}`,
@@ -566,7 +647,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       activeGameId: null,
       lastSentUci: null,
       lastOutgoingChallengeDecline: null,
-      declinedBotUsernames: [],
+      declinedBots: [],
 
       refreshHasToken: async () => {
         const hasToken = await invoke<boolean>("lichess_token_has", { slot: BOT_SLOT }).catch(
@@ -650,12 +731,15 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
 
       clearOutgoingChallengeDecline: () => set({ lastOutgoingChallengeDecline: null }),
 
-      recordBotChallengeFailure: (username) =>
+      recordBotChallengeFailure: (username, rateLimitSeconds) => {
+        const ttlMs =
+          rateLimitSeconds !== undefined && rateLimitSeconds > 0
+            ? rateLimitSeconds * 1000
+            : DEFAULT_DECLINE_TTL_MS;
         set((state) => ({
-          declinedBotUsernames: state.declinedBotUsernames.includes(username)
-            ? state.declinedBotUsernames
-            : [...state.declinedBotUsernames, username],
-        })),
+          declinedBots: upsertDeclinedBot(state.declinedBots, username, ttlMs),
+        }));
+      },
 
       upgradeToBotAccount: async () => {
         logDebug("requesting bot account upgrade");
@@ -794,7 +878,21 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         movetimeMs: state.movetimeMs,
         acceptRated: state.acceptRated,
         lagMarginMs: state.lagMarginMs,
+        // Persist declined bots so a dev-server restart or an
+        // overnight close doesn't surface known-rate-limited
+        // opponents again. The per-entry TTL (24 h default, exact
+        // when Lichess tells us) handles the staleness side.
+        declinedBots: state.declinedBots,
       }),
+      // On rehydrate, drop any entries whose TTL has already elapsed
+      // so the array doesn't accumulate stale usernames across weeks
+      // of app use. Harmless when `declinedBots` is empty (fresh
+      // installs or users who never challenged a bot).
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        const now = Date.now();
+        state.declinedBots = state.declinedBots.filter((e) => e.expiresAtMs > now);
+      },
     },
   ),
 );
