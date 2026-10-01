@@ -18,7 +18,12 @@ import { installLichessEventBusOnce } from "../lib/lichessEventBus";
 import type { GoOptions } from "../lib/uci";
 import { ENGINE_NOT_RUNNING, engineStoreForSide } from "./engineStore";
 import { useGameStore } from "./gameStore";
-import { movesToApply, pendingMoveToSend, type LiveClocks } from "./lichessStore";
+import {
+  movesToApply,
+  pendingMoveToSend,
+  type LiveClocks,
+  type LivePlayers,
+} from "./lichessStore";
 
 export type LichessBotStatus = "idle" | "listening" | "playing" | "error";
 
@@ -110,6 +115,11 @@ interface LichessBotStoreState {
    * with lichessStore. Populated by every `gameState` update, cleared
    * on game end and on stopListening. */
   serverClocks: LiveClocks | null;
+  /** Display identities (name + title) for the live game. Only `gameFull`
+   * carries these; `null` outside a live game. Same role and shape as
+   * lichessStore's `players` -- `LiveGameClocks` reads whichever store
+   * is active to label the clocks with the actual Lichess usernames. */
+  players: LivePlayers | null;
   /** Opponent-gone state from the game stream. Same shape and role as
    * `lichessStore.opponentGone`; `LiveGameActions` reads it to render
    * the countdown and enable the Claim Victory button. */
@@ -343,6 +353,7 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
     lastSentUci: null,
     errorMessage: null,
     serverClocks: null,
+    players: null,
     opponentGone: null,
   });
 
@@ -450,6 +461,21 @@ function annotateLastPlyThinkTime(
   });
 }
 
+/** Same role as the human-store counterpart: capture gameFull's player
+ * display names/titles so `LiveGameClocks` can show the opponent's
+ * handle next to their clock. Mid-game `gameState` lines carry no
+ * player block, so a null name is normal and must not clobber what
+ * was previously captured. */
+function applyBotPlayers(update: LichessMoveUpdate) {
+  if (update.whiteName === null && update.blackName === null) return;
+  useLichessBotStore.setState({
+    players: {
+      white: update.whiteName ? { name: update.whiteName, title: update.whiteTitle } : null,
+      black: update.blackName ? { name: update.blackName, title: update.blackTitle } : null,
+    },
+  });
+}
+
 function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   if (!update) return;
   // Update serverClocks *before* the move loop -- attemptMove fires
@@ -459,6 +485,7 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   // *previous* update's values on every second and subsequent go, which
   // in bullet games would consistently over-allocate.
   const prevClocks = commitServerClocksEarly(update);
+  applyBotPlayers(update);
 
   // Same movesToApply diff as lichessStore's human-play path -- it's
   // agnostic to *who* made a given move, so it also correctly no-ops on
@@ -495,6 +522,7 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
       status: "listening",
       activeGameId: null,
       serverClocks: null,
+      players: null,
       opponentGone: null,
     });
     useGameStore.getState().exitPlayMode();
@@ -639,6 +667,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       acceptRated: false,
       lagMarginMs: 100,
       serverClocks: null,
+      players: null,
       opponentGone: null,
       enginePath: null,
       movetimeMs: 1000,
@@ -865,6 +894,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
             errorMessage: null,
             activeGameId: null,
             serverClocks: null,
+            players: null,
             opponentGone: null,
           });
           useGameStore.getState().exitPlayMode();

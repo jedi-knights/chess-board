@@ -32,6 +32,20 @@ export interface LiveClocks {
   updatedAtMs: number;
 }
 
+/** Display identity for one player in the live game. `title` is e.g.
+ * `"BOT"` / `"GM"` or `null` when the account has none. Shared shape
+ * with lichessBotStore so `LiveGameClocks` can read whichever store is
+ * active without caring which mode drove the game. */
+export interface LivePlayer {
+  name: string;
+  title: string | null;
+}
+
+export interface LivePlayers {
+  white: LivePlayer | null;
+  black: LivePlayer | null;
+}
+
 export type LichessStatus = "idle" | "connecting" | "connected" | "error" | "gameOver";
 
 /** Long-poll status of `POST /api/board/seek`. `"seeking"` while the
@@ -107,6 +121,11 @@ interface LichessStoreState {
   /** Most recent server clock snapshot for the live game. `null` until
    * the first `gameFull`/`gameState` with clock fields arrives. */
   serverClocks: LiveClocks | null;
+  /** Lichess display identities for both sides. Only `gameFull` carries
+   * this; `null` until the first `gameFull` arrives, cleared on
+   * disconnect. `LiveGameClocks` reads it to show the opponent's name
+   * next to their clock -- "Black / omcrosby" instead of a bare "Black". */
+  players: LivePlayers | null;
   /** Opponent-gone state from the game stream's `opponentGone` line.
    * `null` when the opponent is present (or before the first such line).
    * `LiveGameActions` reads `claimWinInSeconds` to render the countdown
@@ -254,6 +273,21 @@ function deriveHumanSide(update: LichessMoveUpdate): "w" | "b" | null {
   return null;
 }
 
+/** Captures the display name/title for each side from a `gameFull` line
+ * into the store so `LiveGameClocks` can show "Black / omcrosby (BOT)"
+ * instead of a bare "Black". Only `gameFull` carries these -- later
+ * `gameState` lines don't, so a missing name is normal mid-game and
+ * must not clobber what was previously captured. */
+function applyPlayers(update: LichessMoveUpdate) {
+  if (update.whiteName === null && update.blackName === null) return;
+  useLichessStore.setState({
+    players: {
+      white: update.whiteName ? { name: update.whiteName, title: update.whiteTitle } : null,
+      black: update.blackName ? { name: update.blackName, title: update.blackTitle } : null,
+    },
+  });
+}
+
 /** Called once per game as soon as the first `gameFull` arrives with
  * enough info to pick sides. Promotes the initial "both lichess"
  * placeholder to a real `{ human, lichess }` pair and updates POV to
@@ -293,6 +327,7 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   // any moves in the same update, so if a mid-game gameFull carries
   // existing moves, they land under the right controllers/POV.
   applyDerivedControllers(update);
+  applyPlayers(update);
 
   const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);
   for (const uci of newMoves) {
@@ -410,6 +445,7 @@ function primeForNewSession(): void {
     lastSentUci: null,
     gameId: null,
     serverClocks: null,
+    players: null,
     opponentGone: null,
   });
 }
@@ -425,6 +461,7 @@ async function connectImpl(gameIdOrUrl: string): Promise<void> {
     lastSentUci: null,
     gameId: gameIdOrUrl,
     serverClocks: null,
+    players: null,
   });
   logDebug(`connecting: ${gameIdOrUrl}`);
   try {
@@ -464,6 +501,7 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
   errorMessage: null,
   lastSentUci: null,
   serverClocks: null,
+  players: null,
   opponentGone: null,
 
   refreshHasToken: async () => {
@@ -730,6 +768,7 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
         errorMessage: null,
         gameId: null,
         serverClocks: null,
+        players: null,
         opponentGone: null,
       });
       useGameStore.getState().exitPlayMode();

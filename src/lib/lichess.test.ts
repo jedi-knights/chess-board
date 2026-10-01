@@ -34,6 +34,10 @@ describe("parseLichessLine", () => {
       bincMs: 2000,
       whiteId: null,
       blackId: null,
+      whiteName: null,
+      blackName: null,
+      whiteTitle: null,
+      blackTitle: null,
     });
   });
 
@@ -56,6 +60,10 @@ describe("parseLichessLine", () => {
       bincMs: 3000,
       whiteId: null,
       blackId: null,
+      whiteName: null,
+      blackName: null,
+      whiteTitle: null,
+      blackTitle: null,
     });
   });
 
@@ -70,6 +78,10 @@ describe("parseLichessLine", () => {
       bincMs: null,
       whiteId: null,
       blackId: null,
+      whiteName: null,
+      blackName: null,
+      whiteTitle: null,
+      blackTitle: null,
     });
   });
 
@@ -94,6 +106,27 @@ describe("parseLichessLine", () => {
     expect(parsed?.blackId).toBe("bob");
   });
 
+  it("surfaces gameFull's white/black display name and title for the clock label", () => {
+    const line = JSON.stringify({
+      type: "gameFull",
+      id: "abcd1234",
+      white: { id: "jk-bot", name: "jk-bot", title: "BOT" },
+      black: { id: "omcrosby", name: "omcrosby" },
+      state: {
+        type: "gameState",
+        moves: "",
+        status: "started",
+        wtime: 60000,
+        btime: 60000,
+      },
+    });
+    const parsed = parseLichessLine(line);
+    expect(parsed?.whiteName).toBe("jk-bot");
+    expect(parsed?.whiteTitle).toBe("BOT");
+    expect(parsed?.blackName).toBe("omcrosby");
+    expect(parsed?.blackTitle).toBeNull();
+  });
+
   it("returns null for missing white/black objects on gameFull", () => {
     const line = JSON.stringify({
       type: "gameFull",
@@ -107,6 +140,10 @@ describe("parseLichessLine", () => {
     const parsed = parseLichessLine(line);
     expect(parsed?.whiteId).toBeNull();
     expect(parsed?.blackId).toBeNull();
+    expect(parsed?.whiteName).toBeNull();
+    expect(parsed?.blackName).toBeNull();
+    expect(parsed?.whiteTitle).toBeNull();
+    expect(parsed?.blackTitle).toBeNull();
   });
 
   it("returns null for a chatLine event", () => {

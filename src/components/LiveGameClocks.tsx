@@ -3,7 +3,12 @@ import { fenAtPly, sideToMove } from "../lib/chessRules";
 import { formatClockMs } from "../lib/time";
 import { useGameStore } from "../state/gameStore";
 import { useLichessBotStore } from "../state/lichessBotStore";
-import { useLichessStore, type LiveClocks } from "../state/lichessStore";
+import {
+  useLichessStore,
+  type LiveClocks,
+  type LivePlayer,
+  type LivePlayers,
+} from "../state/lichessStore";
 
 /** How often (ms) to re-render for the ticking clock. 100 ms is fast enough
  * that the seconds counter never lags visibly and slow enough that this
@@ -20,6 +25,27 @@ function useLiveClocks(): LiveClocks | null {
   return human ?? bot;
 }
 
+/** Mirrors `useLiveClocks` for the player-identity side: pulls display
+ * names + titles from whichever Lichess store populated them. Decoupled
+ * from `useLiveClocks` so a mode with clocks but no `gameFull` yet
+ * still renders a bare "White" / "Black" label without a flash. */
+function useLivePlayers(): LivePlayers | null {
+  const human = useLichessStore((s) => s.players);
+  const bot = useLichessBotStore((s) => s.players);
+  return human ?? bot;
+}
+
+function PlayerLabel({ side, player }: { side: "White" | "Black"; player: LivePlayer | null }) {
+  if (!player) return <span className="clock-side">{side}</span>;
+  return (
+    <span className="clock-side">
+      {side}
+      <span className="clock-player-name">{player.name}</span>
+      {player.title ? <span className="clock-player-title">{player.title}</span> : null}
+    </span>
+  );
+}
+
 /**
  * Two-line live clock display for the currently-active Lichess game.
  * Interpolates locally between server updates: the side to move sees its
@@ -32,6 +58,7 @@ function useLiveClocks(): LiveClocks | null {
  */
 export function LiveGameClocks() {
   const clocks = useLiveClocks();
+  const players = useLivePlayers();
   const plies = useGameStore((s) => s.plies);
   // Force a re-render every 100 ms so the tick advances. `now` is the
   // dependency the render body reads; storing it in state is what makes
@@ -54,11 +81,11 @@ export function LiveGameClocks() {
   return (
     <div className="live-game-clocks">
       <div className={toMove === "b" ? "clock active" : "clock"}>
-        <span className="clock-side">Black</span>
+        <PlayerLabel side="Black" player={players?.black ?? null} />
         <span className="clock-time">{formatClockMs(bDisplay)}</span>
       </div>
       <div className={toMove === "w" ? "clock active" : "clock"}>
-        <span className="clock-side">White</span>
+        <PlayerLabel side="White" player={players?.white ?? null} />
         <span className="clock-time">{formatClockMs(wDisplay)}</span>
       </div>
     </div>

@@ -436,7 +436,24 @@ body {
 }
 
 .live-game-clocks .clock-side {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.35em;
   font-size: 0.9em;
+}
+
+.live-game-clocks .clock-player-name {
+  color: var(--border);
+}
+
+.live-game-clocks .clock-player-title {
+  padding: 0 0.3em;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 0.7em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .live-game-clocks .clock-time {
