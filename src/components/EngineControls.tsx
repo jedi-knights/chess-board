@@ -2,6 +2,13 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { engineStoreForSide } from "../state/engineStore";
+import {
+  LOCAL_VARIANT_LABELS,
+  LOCAL_VARIANT_START_FEN,
+  localVariantToRules,
+  useGameModeStore,
+  type LocalVariant,
+} from "../state/gameModeStore";
 import { useGameStore } from "../state/gameStore";
 
 const RUNNING_STATUSES = new Set(["starting", "ready", "thinking"]);
@@ -33,6 +40,8 @@ export function EngineControls() {
   const startNewGame = useGameStore((s) => s.startNewGame);
   const enterPlayMode = useGameStore((s) => s.enterPlayMode);
   const mode = useGameStore((s) => s.mode);
+  const localVariant = useGameModeStore((s) => s.localVariant);
+  const setLocalVariant = useGameModeStore((s) => s.setLocalVariant);
 
   const running = RUNNING_STATUSES.has(status);
 
@@ -53,7 +62,12 @@ export function EngineControls() {
     // -- that would race with a second requested engine in other modes),
     // so this component owns calling enterPlayMode()+checkTurn() once its
     // one engine is actually ready.
-    startNewGame({ w: humanColor === "w" ? "human" : "engine", b: humanColor === "b" ? "human" : "engine" }, humanColor);
+    startNewGame(
+      { w: humanColor === "w" ? "human" : "engine", b: humanColor === "b" ? "human" : "engine" },
+      humanColor,
+      LOCAL_VARIANT_START_FEN[localVariant],
+      localVariantToRules(localVariant),
+    );
     await startEngine(path);
     // startEngine never rejects on failure (it reports failure via status +
     // errorMessage instead, see failEngine) -- must check the resulting
@@ -78,6 +92,18 @@ export function EngineControls() {
         >
           <option value="w">White</option>
           <option value="b">Black</option>
+        </select>
+      </label>
+      <label className="engine-field">
+        Variant
+        <select
+          value={localVariant}
+          onChange={(e) => setLocalVariant(e.target.value as LocalVariant)}
+          disabled={running}
+        >
+          {Object.entries(LOCAL_VARIANT_LABELS).map(([v, label]) => (
+            <option key={v} value={v}>{label}</option>
+          ))}
         </select>
       </label>
       <label className="engine-field">

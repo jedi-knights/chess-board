@@ -1,6 +1,13 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { useBlackEngineStore, useWhiteEngineStore, type EngineStoreHook } from "../state/engineStore";
+import {
+  LOCAL_VARIANT_LABELS,
+  LOCAL_VARIANT_START_FEN,
+  localVariantToRules,
+  useGameModeStore,
+  type LocalVariant,
+} from "../state/gameModeStore";
 import { useGameStore } from "../state/gameStore";
 
 const RUNNING_STATUSES = new Set(["starting", "ready", "thinking"]);
@@ -73,6 +80,8 @@ export function EngineVsEngineControls() {
   const startNewGame = useGameStore((s) => s.startNewGame);
   const enterPlayMode = useGameStore((s) => s.enterPlayMode);
   const mode = useGameStore((s) => s.mode);
+  const localVariant = useGameModeStore((s) => s.localVariant);
+  const setLocalVariant = useGameModeStore((s) => s.setLocalVariant);
 
   const running = RUNNING_STATUSES.has(whiteStatus) || RUNNING_STATUSES.has(blackStatus);
 
@@ -83,7 +92,12 @@ export function EngineVsEngineControls() {
     // once *both* requested engines have confirmed ready -- unlocking on
     // the first one to finish would let the position move before anyone
     // knows whether the other engine will start at all.
-    startNewGame({ w: "engine", b: "engine" });
+    startNewGame(
+      { w: "engine", b: "engine" },
+      undefined,
+      LOCAL_VARIANT_START_FEN[localVariant],
+      localVariantToRules(localVariant),
+    );
     await Promise.all([startWhite(whitePath), startBlack(blackPath)]);
     const bothReady =
       useWhiteEngineStore.getState().status === "ready" &&
@@ -110,6 +124,18 @@ export function EngineVsEngineControls() {
       <h2>Engine vs. Engine</h2>
       <EngineSlot label="White" useEngine={useWhiteEngineStore} />
       <EngineSlot label="Black" useEngine={useBlackEngineStore} />
+      <label className="engine-field">
+        Variant
+        <select
+          value={localVariant}
+          onChange={(e) => setLocalVariant(e.target.value as LocalVariant)}
+          disabled={running}
+        >
+          {Object.entries(LOCAL_VARIANT_LABELS).map(([v, label]) => (
+            <option key={v} value={v}>{label}</option>
+          ))}
+        </select>
+      </label>
       <label className="engine-field">
         Playback delay (ms)
         <input
