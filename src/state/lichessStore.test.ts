@@ -458,6 +458,29 @@ describe("lichess-game-stream listener", () => {
     expect(useGameStore.getState().pov).toBe("b");
   });
 
+  it("captures gameFull's white/black display name and title into players state", async () => {
+    useLichessStore.setState({
+      verifiedAccount: { id: "me", username: "me", isBot: false },
+    });
+    await useLichessStore.getState().joinGameById("game-1");
+
+    emit(
+      "lichess-game-stream",
+      JSON.stringify({
+        type: "gameFull",
+        id: "game-1",
+        white: { id: "me", name: "Me" },
+        black: { id: "opp", name: "Opp", title: "GM" },
+        state: { type: "gameState", moves: "", status: "started" },
+      }),
+    );
+
+    expect(useLichessStore.getState().players).toEqual({
+      white: { name: "Me", title: null },
+      black: { name: "Opp", title: "GM" },
+    });
+  });
+
   it("leaves the placeholder controllers when neither white nor black matches the verified account (spectator)", async () => {
     useLichessStore.setState({
       verifiedAccount: { id: "me", username: "me", isBot: false },

@@ -58,6 +58,17 @@ export interface LichessMoveUpdate {
    * *human* plays, replacing the pre-PR-4 manual "Play as" picker. */
   whiteId: string | null;
   blackId: string | null;
+  /** Display name of each side (case-preserved). Also only on
+   * `gameFull`. Shown in `LiveGameClocks` next to the clock so the
+   * user can tell their own engine (jk-bot) from the opponent
+   * (omcrosby) at a glance. */
+  whiteName: string | null;
+  blackName: string | null;
+  /** Account title of each side (`"BOT"`, `"GM"`, ...) or null. The
+   * clock display shows `(BOT)` next to a bot opponent's name so it's
+   * obvious at a glance which side is an engine. */
+  whiteTitle: string | null;
+  blackTitle: string | null;
 }
 
 /**
@@ -101,14 +112,30 @@ function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | nul
     bincMs: readOptionalNumber(state, "binc"),
     whiteId: null,
     blackId: null,
+    whiteName: null,
+    blackName: null,
+    whiteTitle: null,
+    blackTitle: null,
   };
 }
 
-function readPlayerId(obj: Record<string, unknown>, key: string): string | null {
+interface PlayerInfo {
+  id: string | null;
+  name: string | null;
+  title: string | null;
+}
+
+function readPlayerInfo(obj: Record<string, unknown>, key: string): PlayerInfo {
   const value = obj[key];
-  if (typeof value !== "object" || value === null) return null;
-  const id = (value as Record<string, unknown>).id;
-  return typeof id === "string" ? id : null;
+  if (typeof value !== "object" || value === null) {
+    return { id: null, name: null, title: null };
+  }
+  const player = value as Record<string, unknown>;
+  const read = (field: string): string | null => {
+    const v = player[field];
+    return typeof v === "string" ? v : null;
+  };
+  return { id: read("id"), name: read("name"), title: read("title") };
 }
 
 /**
@@ -133,13 +160,20 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
   if (obj.type === "gameFull" && typeof obj.state === "object" && obj.state !== null) {
     const state = normalizeState(obj.state as Record<string, unknown>);
     if (!state) return null;
-    // gameFull's top level carries `white: {id, ...}` and `black: {id, ...}`;
-    // gameState lines don't. Extracting them here means callers can
-    // derive the human's color from a single seam.
+    // gameFull's top level carries `white: {id, name, title, ...}` and
+    // `black: {...}`; gameState lines don't. Extracting them here means
+    // callers can derive the human's color AND display the opponent's
+    // name from a single seam.
+    const white = readPlayerInfo(obj, "white");
+    const black = readPlayerInfo(obj, "black");
     return {
       ...state,
-      whiteId: readPlayerId(obj, "white"),
-      blackId: readPlayerId(obj, "black"),
+      whiteId: white.id,
+      blackId: black.id,
+      whiteName: white.name,
+      blackName: black.name,
+      whiteTitle: white.title,
+      blackTitle: black.title,
     };
   }
   if (obj.type === "gameState") {
