@@ -542,8 +542,9 @@ describe("decideChallenge", () => {
     expect(rulesFromLichessVariant("threeCheck")).toBe("3check");
     expect(rulesFromLichessVariant("horde")).toBe("horde");
     expect(rulesFromLichessVariant("racingKings")).toBe("racingkings");
+    expect(rulesFromLichessVariant("atomic")).toBe("atomic");
     expect(rulesFromLichessVariant(null)).toBe("chess");
-    expect(rulesFromLichessVariant("atomic")).toBe("chess");  // unknown collapses
+    expect(rulesFromLichessVariant("crazyhouse")).toBe("chess");  // unknown collapses
   });
 
   it("accepts a King of the Hill challenge now that UCI_Variant is wired", () => {
@@ -570,12 +571,18 @@ describe("decideChallenge", () => {
     ).toEqual({ kind: "accept" });
   });
 
-  it("still declines variants that have no engine support yet (atomic, antichess, ...)", () => {
+  it("accepts an Atomic challenge now that engine-side Atomic support is wired", () => {
     expect(
       decideChallenge(baseChallenge({ variant: "atomic" }), CTX_DEFAULT),
-    ).toEqual({ kind: "decline", reason: "variant" });
+    ).toEqual({ kind: "accept" });
+  });
+
+  it("still declines variants that have no engine support yet (antichess, crazyhouse)", () => {
     expect(
       decideChallenge(baseChallenge({ variant: "antichess" }), CTX_DEFAULT),
+    ).toEqual({ kind: "decline", reason: "variant" });
+    expect(
+      decideChallenge(baseChallenge({ variant: "crazyhouse" }), CTX_DEFAULT),
     ).toEqual({ kind: "decline", reason: "variant" });
   });
 
