@@ -158,6 +158,16 @@ describe("buildPositionCommand", () => {
       "position startpos moves e2e4 e7e5",
     );
   });
+
+  it("builds the fen form with no moves when a custom start FEN is supplied", () => {
+    const fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    expect(buildPositionCommand([], fen)).toBe(`position fen ${fen}`);
+  });
+
+  it("builds the fen form with moves", () => {
+    const fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    expect(buildPositionCommand(["b1c3"], fen)).toBe(`position fen ${fen} moves b1c3`);
+  });
 });
 
 describe("buildGoCommand", () => {

@@ -20,7 +20,7 @@ export interface Ply {
   clockSeconds?: number;
 }
 
-const START_FEN =
+export const START_FEN =
   "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 const CLK_PATTERN = /\[%clk\s+(\d+):(\d+):(\d+)\]/;
@@ -141,9 +141,12 @@ export function parseUciMoves(moveList: string): Ply[] {
   return plies;
 }
 
-/** FEN at a given ply index; ply 0 is the starting position. */
-export function fenAtPly(plies: Ply[], ply: number): string {
-  if (ply <= 0) return START_FEN;
+/** FEN at a given ply index; ply 0 is the starting position. `startFen`
+ * defaults to the standard initial position -- pass a custom FEN when the
+ * game started from a Lichess "From Position" challenge or any other
+ * non-standard setup, so ply 0 reports that position rather than startpos. */
+export function fenAtPly(plies: Ply[], ply: number, startFen?: string): string {
+  if (ply <= 0) return startFen ?? START_FEN;
   const clamped = Math.min(ply, plies.length);
   return plies[clamped - 1].fenAfter;
 }

@@ -32,9 +32,10 @@ function App() {
   useViewMenu();
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
+  const startFen = useGameStore((s) => s.startFen);
   const cameraMode = useGameStore((s) => s.cameraMode);
   const mode = useGameStore((s) => s.mode);
-  const fen = fenAtPly(plies, ply);
+  const fen = fenAtPly(plies, ply, startFen ?? undefined);
   const gameModePreset = useGameModeStore((s) => s.preset);
 
   const [sideTab, setSideTab] = useState<SideTab>("config");

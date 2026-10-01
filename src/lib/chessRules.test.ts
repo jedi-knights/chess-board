@@ -74,6 +74,19 @@ describe("fenAtPly", () => {
     const plies = parsePgn(FOOLS_MATE_PGN);
     expect(fenAtPly(plies, 999)).toBe(FOOLS_MATE_FINAL_FEN);
   });
+
+  it("returns the custom start FEN at ply 0 when provided", () => {
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    expect(fenAtPly([], 0, custom)).toBe(custom);
+  });
+
+  it("ignores the start FEN once at least one ply has been played", () => {
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    const plies = parsePgn(FOOLS_MATE_PGN);
+    // Ply 1's fenAfter is whatever `plies[0]` records; the start FEN
+    // argument has no effect once moves have been played.
+    expect(fenAtPly(plies, 1, custom)).toBe(plies[0].fenAfter);
+  });
 });
 
 describe("sideToMove", () => {

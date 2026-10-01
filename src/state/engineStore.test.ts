@@ -335,6 +335,23 @@ describe("checkTurn / maybeRequestEngineMove", () => {
     expect(useBlackEngineStore.getState().status).toBe("ready");
   });
 
+  it("emits `position fen <FEN>` when the game started from a custom position", async () => {
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" }, "w", custom);
+    useGameStore.getState().enterPlayMode();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    mockedInvoke.mockClear();
+
+    useWhiteEngineStore.getState().checkTurn();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: `position fen ${custom}`,
+    });
+  });
+
   it("fires automatically when a ply is appended, via the gameStore subscription", async () => {
     useGameStore.getState().startNewGame({ w: "human", b: "engine" });
     useGameStore.getState().enterPlayMode();

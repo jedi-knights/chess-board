@@ -321,20 +321,22 @@ describe("account event stream routes challenges through decideChallenge", () =>
     });
   });
 
-  it("declines a custom-starting-FEN challenge with reason 'generic'", async () => {
+  it("accepts a From Position challenge now that startFen is plumbed, and caches initialFen on the store", async () => {
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
     await startBotListening();
     mockedInvoke.mockClear();
 
-    emitAccountEvent(
-      fullChallenge({ initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" }),
-    );
+    emitAccountEvent(fullChallenge({ initialFen: custom }));
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_accept", {
       slot: "bot",
       challengeId: "abcd1234",
-      reason: "generic",
     });
+    // handleGameStart reads this when the subsequent gameStart event
+    // arrives, so a standard-startpos engine race on the first move is
+    // avoided.
+    expect(useLichessBotStore.getState().pendingStartFen).toBe(custom);
   });
 
   it("declines a correspondence challenge with reason 'timeControl'", async () => {
