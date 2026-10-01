@@ -200,8 +200,8 @@ this file and the human-facing docs.
   union in TS -- exactly the set Lichess accepts on `POST /api/challenge/{id}/decline`;
   anything else Lichess 400s. The decision function's branch order is safety-first
   (self-challenge -> drop, wrong-destUser -> decline "generic") before policy
-  (concurrent-game -> "later", variant -> "variant", custom-FEN -> "generic",
-  correspondence -> "timeControl", rated-without-opt-in -> "rated"), so a malformed
+  (concurrent-game -> "later", variant -> "variant",
+  rated-without-opt-in -> "rated"), so a malformed
   challenge doesn't get a misleading policy-reason decline that hides the real problem.
   Self-challenges *drop* rather than decline because Lichess 400s a self-decline;
   letting Lichess time them out is the correct behavior. Do not "clean up" by folding
@@ -211,6 +211,21 @@ this file and the human-facing docs.
   opted in. The checkbox lives in `LichessBotControls`; the decision function reads
   the persisted value. Do not flip the default without a separate, deliberate
   conversation about the fair-play implication.
+- **Correspondence challenges are accepted.** Lichess omits `wtime`/`btime` on
+  correspondence streams; `commitServerClocksEarly`'s own `wtimeMs !== null &&
+  btimeMs !== null` guard leaves `serverClocks` as `null` in that case, and
+  `buildBotGoOptions` already falls back to `{ movetimeMs }` when `serverClocks`
+  is null -- so the bot engine thinks for its configured per-move cap regardless
+  of how many days Lichess allots. For a human the live-session UX is the same
+  as a real-time game: the board shows the position and the human plays when
+  they feel like it. Correspondence games spanning app restarts are reachable
+  via `joinGameById` (paste the game URL/id) once the bot or human session is
+  listening/idle again. The game-mode menu lock still fires for the live
+  session; a correspondence game lasting days means the operator can't change
+  modes until the game ends or is manually disconnected via `stopListening`
+  (bot) / stop-game (human). Not re-architected here -- noted so future "why
+  can't I switch modes" shows up as a user-ergonomics follow-up rather than a
+  correctness bug.
 - **Custom starting positions (Lichess "From Position") are accepted.** `gameStore`
   carries an optional `startFen: string | null`; `fenAtPly(plies, ply, startFen?)` and
   `buildPositionCommand(moves, startFen?)` thread it through, so `attemptMove`'s FEN

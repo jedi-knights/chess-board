@@ -521,7 +521,7 @@ describe("decideChallenge", () => {
     ).toEqual({ kind: "accept" });
   });
 
-  it("declines a correspondence challenge with reason 'timeControl'", () => {
+  it("accepts a correspondence challenge: engine falls back to movetime, human just plays when ready", () => {
     expect(
       decideChallenge(
         baseChallenge({
@@ -535,7 +535,7 @@ describe("decideChallenge", () => {
         }),
         CTX_DEFAULT,
       ),
-    ).toEqual({ kind: "decline", reason: "timeControl" });
+    ).toEqual({ kind: "accept" });
   });
 
   it("declines a rated challenge with reason 'rated' when the operator hasn't opted in", () => {
