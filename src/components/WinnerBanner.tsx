@@ -91,6 +91,7 @@ export function WinnerBanner() {
                   rules === "horde" ? "horde" :
                   rules === "racingkings" ? "Racing Kings" :
                   rules === "atomic" ? "atomic" :
+                  rules === "antichess" ? "antichess" :
                   "variant end";
     message = `${names[winner]} wins by ${label}`;
   } else if (status.reason === "stalemate") {
