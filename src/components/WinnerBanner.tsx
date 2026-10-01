@@ -89,6 +89,7 @@ export function WinnerBanner() {
     const label = rules === "koth" ? "King of the Hill" :
                   rules === "3check" ? "three-check" :
                   rules === "horde" ? "horde" :
+                  rules === "racingkings" ? "Racing Kings" :
                   "variant end";
     message = `${names[winner]} wins by ${label}`;
   } else if (status.reason === "stalemate") {

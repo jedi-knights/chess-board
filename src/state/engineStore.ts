@@ -378,6 +378,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
                 side,
                 line: buildSetOptionCommand("UCI_Variant", "horde"),
               });
+            } else if (activeRules === "racingkings") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Variant", "racingKings"),
+              });
             }
             set({ status: "ready" });
             logDebug("engine ready");
