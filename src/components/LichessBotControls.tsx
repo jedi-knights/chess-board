@@ -31,6 +31,12 @@ export function LichessBotControls() {
   const refreshHasToken = useLichessBotStore((s) => s.refreshHasToken);
   const setToken = useLichessBotStore((s) => s.setToken);
   const clearToken = useLichessBotStore((s) => s.clearToken);
+  const lastOutgoingDecline = useLichessBotStore((s) => s.lastOutgoingChallengeDecline);
+  const declinedBotUsernames = useLichessBotStore((s) => s.declinedBotUsernames);
+  const clearOutgoingChallengeDecline = useLichessBotStore(
+    (s) => s.clearOutgoingChallengeDecline,
+  );
+  const recordBotChallengeFailure = useLichessBotStore((s) => s.recordBotChallengeFailure);
   const verifyAccount = useLichessBotStore((s) => s.verifyAccount);
   const oauthLogin = useLichessBotStore((s) => s.oauthLogin);
   const cancelOauthLogin = useLichessBotStore((s) => s.cancelOauthLogin);
@@ -120,6 +126,9 @@ export function LichessBotControls() {
 
   async function challenge(username: string) {
     setChallengeError(null);
+    // Clear any previous decline banner -- the user is initiating a
+    // fresh attempt, so the old "X declined: ..." is no longer current.
+    clearOutgoingChallengeDecline();
     setChallengingUsername(username);
     try {
       await invoke("lichess_challenge_bot", {
@@ -128,8 +137,18 @@ export function LichessBotControls() {
         clockIncrementSeconds,
         color,
       });
+      // Success means the POST landed -- Lichess has queued the
+      // challenge. Whether the target accepts is a separate async
+      // signal (`challengeDeclined` or `gameStart` on the event
+      // stream); surfaced by `lastOutgoingDecline`/game-start handler.
     } catch (err) {
-      setChallengeError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setChallengeError(message);
+      // POST failed (400 rate limit, offline, etc.) -- treat as a
+      // definitive "don't try this one again this session" and
+      // filter them out of the list. Matches the user's intent:
+      // "I don't want bots I can't play to even show up".
+      recordBotChallengeFailure(username);
     } finally {
       setChallengingUsername(null);
     }
@@ -297,23 +316,48 @@ export function LichessBotControls() {
         {loadingBots ? "Loading…" : "Browse online bots"}
       </button>
       {challengeError && <p className="load-error">{challengeError}</p>}
-      {bots.length > 0 && (
-        <ul className="lichess-bot-list">
-          {bots.map((bot) => (
-            <li key={bot.username}>
-              <span>
-                {bot.username} — {ratingsText(bot.ratings)}
-              </span>
-              <button
-                onClick={() => challenge(bot.username)}
-                disabled={!canChallenge || challengingUsername === bot.username}
-              >
-                {challengingUsername === bot.username ? "Challenging…" : "Challenge"}
-              </button>
-            </li>
-          ))}
-        </ul>
+      {lastOutgoingDecline && (
+        <p className="hint">
+          {lastOutgoingDecline.username ?? "Opponent"} declined
+          {lastOutgoingDecline.reason ? `: ${lastOutgoingDecline.reason}` : ""}
+        </p>
       )}
+      {(() => {
+        // Filter out bots that have declined us or rate-limited us this
+        // session -- the user explicitly asked that bots they can't play
+        // not show up at all. Also compute whether the filter removed
+        // anything, so a reassuring "N hidden" line surfaces instead of
+        // the user wondering if Browse-online-bots silently broke.
+        const visible = bots.filter((b) => !declinedBotUsernames.includes(b.username));
+        const hiddenCount = bots.length - visible.length;
+        return (
+          <>
+            {hiddenCount > 0 && (
+              <p className="hint">
+                {hiddenCount} bot{hiddenCount === 1 ? "" : "s"} hidden (declined or
+                unavailable this session). Click "Browse online bots" again to re-fetch.
+              </p>
+            )}
+            {visible.length > 0 && (
+              <ul className="lichess-bot-list">
+                {visible.map((bot) => (
+                  <li key={bot.username}>
+                    <span>
+                      {bot.username} — {ratingsText(bot.ratings)}
+                    </span>
+                    <button
+                      onClick={() => challenge(bot.username)}
+                      disabled={!canChallenge || challengingUsername === bot.username}
+                    >
+                      {challengingUsername === bot.username ? "Challenging…" : "Challenge"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }

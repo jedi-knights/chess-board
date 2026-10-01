@@ -206,8 +206,19 @@ export interface LichessChallengeDeclinedEvent {
   type: "challengeDeclined";
   challengeId: string;
   /** Whatever reason string Lichess reports back -- may or may not match
-   * one of `LichessDeclineReason`'s tags. Logged, not acted on. */
+   * one of `LichessDeclineReason`'s tags. Surfaced in the UI so the
+   * user knows *why* their outgoing challenge produced no game. */
   reason: string | null;
+  /** The account id of who sent the challenge; compare against the
+   * verified account id to tell "we declined their incoming" (our id)
+   * from "they declined our outgoing" (not our id). */
+  challengerId: string | null;
+  /** Display name of the recipient of the challenge -- for outgoing
+   * declines this is the bot that said no, used to show
+   * "<name> declined: <reason>" and to filter them out of the Browse
+   * Online Bots list for the rest of the session. */
+  destUserName: string | null;
+  destUserId: string | null;
 }
 
 export interface LichessGameStartEvent {
@@ -339,7 +350,19 @@ export function parseLichessAccountEvent(raw: string): LichessAccountEvent | nul
     if (!id) return null;
     // `declineReason` sometimes, `reason` sometimes -- defensively read both.
     const reason = readString(c, "declineReason") ?? readString(c, "reason");
-    return { type: "challengeDeclined", challengeId: id, reason };
+    const challenger = readUserRef(c, "challenger");
+    const destUser =
+      typeof c.destUser === "object" && c.destUser !== null
+        ? (c.destUser as Record<string, unknown>)
+        : null;
+    return {
+      type: "challengeDeclined",
+      challengeId: id,
+      reason,
+      challengerId: challenger?.id ?? null,
+      destUserId: destUser ? readString(destUser, "id") : null,
+      destUserName: destUser ? readString(destUser, "name") : null,
+    };
   }
 
   if (obj.type === "gameStart" && typeof obj.game === "object" && obj.game !== null) {
