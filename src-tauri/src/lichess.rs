@@ -342,6 +342,27 @@ fn cache_put(cache: &SharedAccountCache, slot: TokenSlot, info: AccountInfo) {
     }
 }
 
+/// Signal used to abandon an in-flight OAuth sign-in before its 5-minute
+/// timeout. `lichess_oauth_login` waits on this `Notify` in a
+/// `tokio::select!` alongside the loopback-listener accept; a call to
+/// `lichess_oauth_cancel` (or a fresh `lichess_oauth_login`) fires
+/// `notify_waiters()` and the login task bails out immediately.
+///
+/// Shared singleton because at most one OAuth flow is active at a time
+/// -- the Sign-in button is disabled while `oauthInFlight` is true, and
+/// the "fresh login supersedes previous" rule is handled by notifying
+/// at the start of each login.
+pub struct SharedOauthCancel(pub Arc<tokio::sync::Notify>);
+
+pub fn new_shared_oauth_cancel() -> SharedOauthCancel {
+    SharedOauthCancel(Arc::new(tokio::sync::Notify::new()))
+}
+
+#[tauri::command]
+pub fn lichess_oauth_cancel(cancel: State<'_, SharedOauthCancel>) {
+    cancel.0.notify_waiters();
+}
+
 /// Live-fetches `/api/account` for the token in `slot` and returns the
 /// account info the fair-play guard needs. Does *not* enforce that the
 /// account type matches the slot -- that's `token_for_slot_verified`'s
@@ -468,11 +489,20 @@ pub async fn lichess_verify_account(
 /// `CALLBACK_TIMEOUT` (5 minutes) while the user approves in the
 /// browser. If they close the tab or take too long, the timeout
 /// surfaces as an error and the port is released.
+///
+/// Supports cancellation: the shared `OauthCancel` notify is signaled
+/// by `lichess_oauth_cancel`, which abandons the listener wait
+/// immediately -- useful when the user closes the browser tab before
+/// completing the flow (e.g. signed in as the wrong account) and
+/// wants to retry without waiting out the 5-minute timeout. Also
+/// signals cancellation on *every* login start, so a second Sign-in
+/// click supersedes the first automatically.
 #[tauri::command]
 pub async fn lichess_oauth_login(
     app: AppHandle,
     slot: TokenSlot,
     account_cache: State<'_, SharedAccountCache>,
+    cancel: State<'_, SharedOauthCancel>,
 ) -> Result<AccountInfo, String> {
     use crate::lichess_oauth::{
         accept_callback, build_authorize_url, challenge_from_verifier, exchange_code_for_token,
@@ -484,6 +514,10 @@ pub async fn lichess_oauth_login(
         TokenSlot::Human => &["board:play"],
         TokenSlot::Bot => &["bot:play", "challenge:write"],
     };
+
+    // Cancel any previously-waiting listener before starting a new
+    // one -- a second Sign-in click should supersede the first.
+    cancel.0.notify_waiters();
 
     // PKCE material: generated on every login so a leaked previous
     // verifier can't replay against a fresh code, and vice versa.
@@ -515,18 +549,26 @@ pub async fn lichess_oauth_login(
 
     // Bounded wait: the user might get distracted or fail Lichess's
     // login flow before approving. 5 minutes matches
-    // `CALLBACK_TIMEOUT`.
-    let params = tokio::time::timeout(
-        CALLBACK_TIMEOUT,
-        accept_callback(&listener, &expected_state),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "OAuth flow timed out after {}s -- click Sign in with Lichess again",
-            CALLBACK_TIMEOUT.as_secs()
-        )
-    })??;
+    // `CALLBACK_TIMEOUT`. `tokio::select!` also arms a cancel branch
+    // so `lichess_oauth_cancel` can abandon the wait immediately
+    // (e.g. user closed the browser tab and wants to retry).
+    let cancel_notify = cancel.0.clone();
+    let params = tokio::select! {
+        result = tokio::time::timeout(CALLBACK_TIMEOUT, accept_callback(&listener, &expected_state)) => {
+            match result {
+                Ok(Ok(p)) => p,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => return Err(format!(
+                    "OAuth flow timed out after {}s -- click Sign in with Lichess again",
+                    CALLBACK_TIMEOUT.as_secs()
+                )),
+            }
+        }
+        _ = cancel_notify.notified() => {
+            let _ = crate::debug_log::append(&app, "[lichess-oauth] canceled by user");
+            return Err("OAuth sign-in canceled".to_string());
+        }
+    };
 
     // Trade the code for a token. Uses the shared one-shot client
     // (has a 30 s total timeout) so a hung token endpoint doesn't

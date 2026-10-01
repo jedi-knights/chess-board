@@ -39,7 +39,10 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # `net` + `io-util` for the OAuth PKCE loopback listener: bind
 # 127.0.0.1:0, accept one connection, read the callback query, write a
 # 200 back so the browser tab shows a success page.
-tokio = { version = "1", features = ["rt", "time", "sync", "net", "io-util"] }
+# `macros` for `tokio::select!` -- used by `lichess_oauth_login` to
+# race the listener-accept against a cancellation notify, so a user
+# who closed the browser tab can abandon the 5-minute wait and retry.
+tokio = { version = "1", features = ["rt", "time", "sync", "net", "io-util", "macros"] }
 # Cross-platform OS keychain (macOS Keychain / Windows Credential Manager /
 # Linux Secret Service) for the Lichess personal access token -- deliberately
 # not persisted via zustand's localStorage-backed store, since it's a bearer

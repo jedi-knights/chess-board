@@ -79,6 +79,9 @@ interface LichessBotStoreState {
    * human-side counterpart; requests bot-specific scopes
    * (`bot:play` + `challenge:write`). */
   oauthLogin: () => Promise<void>;
+  /** Abandon an in-flight `oauthLogin`. Same contract as the
+   * human-side counterpart. */
+  cancelOauthLogin: () => Promise<void>;
   setEnginePath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
   setAcceptRated: (v: boolean) => void;
@@ -565,8 +568,25 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
           });
           logDebug(`oauth login succeeded as ${info.username}`);
         } catch (err) {
-          set({ verifyError: String(err) });
-          logDebug(`oauth login failed: ${String(err)}`);
+          // See lichessStore.oauthLogin -- distinguish user-driven
+          // cancel from a real failure.
+          const message = String(err);
+          if (message.includes("canceled")) {
+            set({ verifyError: null });
+            logDebug("oauth login canceled by user");
+          } else {
+            set({ verifyError: message });
+            logDebug(`oauth login failed: ${message}`);
+          }
+        }
+      },
+
+      cancelOauthLogin: async () => {
+        logDebug("oauth cancel requested");
+        try {
+          await invoke("lichess_oauth_cancel");
+        } catch (err) {
+          logDebug(`oauth cancel failed: ${String(err)}`);
         }
       },
 
