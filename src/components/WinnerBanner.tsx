@@ -47,6 +47,7 @@ export function WinnerBanner() {
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
   const startFen = useGameStore((s) => s.startFen);
+  const rules = useGameStore((s) => s.rules);
   const controllers = useGameStore((s) => s.controllers);
   // Selected as individual primitives, not a single object-literal selector
   // -- a selector returning a fresh object every call defeats zustand's
@@ -65,7 +66,7 @@ export function WinnerBanner() {
   if (ply !== plies.length) return null;
 
   const endFen = fenAtPly(plies, plies.length, startFen ?? undefined);
-  const status = gameStatus(endFen);
+  const status = gameStatus(endFen, rules);
   if (!status.over) return null;
 
   const names: SideNames = {
@@ -79,6 +80,12 @@ export function WinnerBanner() {
     // other side delivered the mate.
     const winner = sideToMove(endFen) === "w" ? "b" : "w";
     message = `${names[winner]} wins by checkmate`;
+  } else if (status.reason === "variantEnd") {
+    // KotH: the side NOT to move just centered their king and won
+    // (same convention as checkmate -- the mover of the game-ending
+    // ply has already flipped side_to_move away from themselves).
+    const winner = sideToMove(endFen) === "w" ? "b" : "w";
+    message = `${names[winner]} wins by King of the Hill`;
   } else if (status.reason === "stalemate") {
     message = `Draw by stalemate — ${names.w} vs ${names.b}`;
   } else {

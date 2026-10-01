@@ -170,7 +170,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
     if (
       gameState.mode !== "play" ||
       sideToMove(liveFen) !== side ||
-      gameStatus(liveFen).over
+      gameStatus(liveFen, gameState.rules).over
     ) {
       logDebug(`dropping late bestmove: ${move}`);
       useEngineStore.setState({ status: "ready" });
@@ -204,7 +204,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
     const fen = fenAtPly(game.plies, game.ply, game.startFen ?? undefined);
     if (sideToMove(fen) !== side) return;
     if (game.controllers[side] !== "engine") return;
-    if (gameStatus(fen).over) return;
+    if (gameStatus(fen, game.rules).over) return;
 
     // When *both* sides are engine-controlled, a human's own reaction time
     // isn't there to pace the game -- top the delay before this move up to
@@ -354,6 +354,19 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
               void invoke("engine_write_line", {
                 side,
                 line: buildSetOptionCommand("UCI_Chess960", "true"),
+              });
+            }
+            // Variant-level rules (KotH / three-check / etc.) ship as
+            // UCI_Variant. The engine ignores unknown values (defaults
+            // to standard); only variants the engine actually supports
+            // flip terminal/eval behavior. UCI_Chess960 and UCI_Variant
+            // are orthogonal -- Chess960 is a FEN-level variant, the
+            // others are rule-level.
+            const kothOrStandard = useGameStore.getState().rules;
+            if (kothOrStandard === "koth") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Variant", "kingofthehill"),
               });
             }
             set({ status: "ready" });

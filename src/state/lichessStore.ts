@@ -6,6 +6,7 @@ import {
   isTerminalStatus,
   parseLichessLine,
   parseLichessOpponentGone,
+  rulesFromLichessVariant,
   type LichessAccountEvent,
   type LichessAccountInfo,
   type LichessMoveUpdate,
@@ -342,7 +343,7 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   // multi-move catch-up (reconnect to a game in progress) validates
   // under the right rule set.
   if (update.variant !== null) {
-    useGameStore.getState().setRules(update.variant === "chess960" ? "chess960" : "chess");
+    useGameStore.getState().setRules(rulesFromLichessVariant(update.variant));
   }
 
   const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);

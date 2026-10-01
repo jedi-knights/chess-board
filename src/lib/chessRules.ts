@@ -1,4 +1,5 @@
 import { Chess } from "chessops/chess";
+import { KingOfTheHill } from "chessops/variant";
 import { parseFen, makeFen } from "chessops/fen";
 import { parsePgn as parseChessopsPgn, parseComment } from "chessops/pgn";
 import { parseSan, makeSanAndPlay } from "chessops/san";
@@ -59,14 +60,32 @@ const PROMOTION_LETTER_TO_ROLE: Record<string, Role> = {
 
 const colorChar = (color: Color): "w" | "b" => (color === "white" ? "w" : "b");
 
+/** Variant / rule set that affects terminal detection. Mirrors
+ * gameStore's `Rules` union; kept here as a string so this module stays
+ * independent of state-layer imports. Standard chess and Chess960
+ * share movegen + terminals ("chess" is the shared default); KotH
+ * adds the center-square win condition via chessops' KingOfTheHill
+ * class. Future variants (threeCheck, antichess, etc.) extend this. */
+export type Variant = "chess" | "chess960" | "koth";
+
 /** Position loader shared by every function below -- `parseFen` returns
  * a `Result`, so a malformed FEN surfaces as `null` here rather than an
  * exception. The caller decides what "FEN was bad" means (return null,
- * fall through to no-op, etc.). */
-function loadPosition(fen: string): Chess | null {
+ * fall through to no-op, etc.).
+ *
+ * For KotH, chessops' `KingOfTheHill` class extends `Chess` and
+ * overrides `isVariantEnd()` to return true when a king is on
+ * D4/D5/E4/E5. All callers whose return value depends on terminal
+ * detection must pass `variant` so the right class is selected. Callers
+ * that only read moves / piece positions can use the default
+ * (`variant === "chess"`) since movegen rules are identical. */
+function loadPosition(fen: string, variant: Variant = "chess"): Chess | null {
   const setupRes = parseFen(fen);
   if (!setupRes.isOk) return null;
-  const posRes = Chess.fromSetup(setupRes.unwrap());
+  const setup = setupRes.unwrap();
+  const posRes = variant === "koth"
+    ? KingOfTheHill.fromSetup(setup)
+    : Chess.fromSetup(setup);
   return posRes.isOk ? posRes.unwrap() : null;
 }
 
@@ -284,15 +303,28 @@ export function tryMove(
 
 export type GameStatus =
   | { over: false }
-  | { over: true; reason: "checkmate" | "stalemate" | "draw" };
+  | {
+      over: true;
+      /** `"variantEnd"` covers rule-specific wins where neither
+       * checkmate nor stalemate applies -- KotH's "king on center"
+       * is the first one; three-check and horde will reuse it. */
+      reason: "checkmate" | "stalemate" | "draw" | "variantEnd";
+    };
 
-/** Whether the game at `fen` has ended, and why. */
-export function gameStatus(fen: string): GameStatus {
-  const pos = loadPosition(fen);
+/** Whether the game at `fen` has ended, and why. For KotH, pass
+ * `variant === "koth"` so chessops' `KingOfTheHill` class is used
+ * for terminal detection (a king on D4/D5/E4/E5 ends the game). */
+export function gameStatus(fen: string, variant: Variant = "chess"): GameStatus {
+  const pos = loadPosition(fen, variant);
   if (!pos) return { over: false };
   if (!pos.isEnd()) return { over: false };
   if (pos.isCheckmate()) return { over: true, reason: "checkmate" };
   if (pos.isStalemate()) return { over: true, reason: "stalemate" };
+  // Variant-specific terminal (KotH center square); isEnd() returned
+  // true but neither of the two standard terminals matched.
+  if (variant !== "chess" && pos.isVariantEnd()) {
+    return { over: true, reason: "variantEnd" };
+  }
   return { over: true, reason: "draw" };
 }
 

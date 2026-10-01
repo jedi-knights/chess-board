@@ -226,6 +226,23 @@ this file and the human-facing docs.
   (bot) / stop-game (human). Not re-architected here -- noted so future "why
   can't I switch modes" shows up as a user-ergonomics follow-up rather than a
   correctness bug.
+- **King of the Hill is accepted.** `Rules` union gains `"koth"`;
+  `rulesFromLichessVariant` (new helper in `src/lib/lichess.ts`) maps
+  `"kingOfTheHill"` -> `"koth"`, used by both Lichess stores so the mapping
+  stays in one place. `engineStore.startEngine` sends `setoption name
+  UCI_Variant value kingofthehill` after the uci handshake when
+  `rules === "koth"` -- orthogonal to `UCI_Chess960` (Chess960 is a FEN-level
+  variant; KotH is a rule-level variant, so a position could in principle be
+  both). `chessRules.ts` adds a `Variant` type and `gameStatus(fen, variant)`
+  / `checkStatus(fen, variant)` now take an optional variant. For KotH,
+  chessops' `KingOfTheHill` class is used -- it overrides `isVariantEnd()`
+  to return true when a king sits on D4/D5/E4/E5. A new `"variantEnd"` reason
+  is added to `GameStatus`; `WinnerBanner` renders "X wins by King of the
+  Hill" when it fires. Movegen and move validation stay on the standard
+  `Chess` class (KotH shares its movegen with standard chess) -- only the
+  terminal check differs. `engineStore`'s late-bestmove guard reads
+  `gameStore.rules` so a KotH-end position correctly drops a late engine
+  bestmove the same way checkmate does.
 - **Chess960 (Fischer Random) is accepted.** `gameStore.rules: Rules` carries
   `"chess" | "chess960"`; set by `startNewGame`'s optional 4th arg or by the
   narrow `setRules` setter. `engineStore.startEngine` sends `setoption name
