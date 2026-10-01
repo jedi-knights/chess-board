@@ -68,6 +68,23 @@ interface LichessBotStoreState {
   errorMessage: string | null;
   activeGameId: string | null;
   lastSentUci: string | null;
+  /** Most recent `challengeDeclined` event on our account stream for
+   * an *outgoing* challenge we sent (via "Browse online bots →
+   * Challenge" or `lichess_challenge_bot`). Cleared when a new
+   * outgoing challenge is sent. The `reason` is Lichess's own text,
+   * e.g. "I'm not accepting challenges from bots." -- many bots
+   * auto-decline bot-vs-bot. `username` is the bot that declined,
+   * for the UI's "Alice declined: ..." phrasing. */
+  lastOutgoingChallengeDecline: { username: string | null; reason: string | null } | null;
+  /** Session-scoped set of bot usernames we've already tried and been
+   * rejected by -- either via a `challengeDeclined` event or a 400
+   * from `lichess_challenge_bot` (rate-limited, offline, bots that
+   * refuse bot-vs-bot, etc). The Browse-Online-Bots list is filtered
+   * through this so the user doesn't re-click the same dead ends.
+   * Deliberately not persisted: a bot that declined earlier today
+   * may be fresh after Lichess's daily rate window resets, and
+   * remembering across restarts would hide them permanently. */
+  declinedBotUsernames: string[];
 
   refreshHasToken: () => Promise<void>;
   setToken: (token: string) => Promise<void>;
@@ -86,6 +103,16 @@ interface LichessBotStoreState {
   setMovetimeMs: (ms: number) => void;
   setAcceptRated: (v: boolean) => void;
   setLagMarginMs: (ms: number) => void;
+  /** Called by the Browse-Online-Bots UI when the user initiates a new
+   * challenge: clears the previous decline-reason banner (so it isn't
+   * mistaken for the result of the fresh attempt) and, on success,
+   * records the target username as "pending" for the moment. */
+  clearOutgoingChallengeDecline: () => void;
+  /** Called when a `lichess_challenge_bot` POST fails with any status
+   * -- rate limit, 400 Bad Request, offline opponent. Adds the
+   * username to the session-scoped decline set so the list filters
+   * it out on next render. */
+  recordBotChallengeFailure: (username: string) => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
    * doc comment. The caller (the UI) is responsible for a separate,
    * explicit confirmation step before calling this. Returns whether it
@@ -437,15 +464,39 @@ function routeAccountEvent(event: LichessAccountEvent) {
     case "challengeCanceled":
       logDebug(`challenge ${event.challengeId} canceled by challenger`);
       break;
-    case "challengeDeclined":
-      // The bot never issues outgoing challenges today, so this
-      // arrives only when Lichess echoes back our own decline. Log
-      // it for the timeline, but do nothing -- the decline was our
-      // own action.
+    case "challengeDeclined": {
+      // Two shapes converge here:
+      //   1. Lichess echoes back our own decline (we called
+      //      `lichess_challenge_decline` on an incoming challenge --
+      //      `challengerId` is the opponent, `destUserId` is us).
+      //   2. Our outgoing challenge (sent via `lichess_challenge_bot`
+      //      from "Browse online bots → Challenge") got rejected by
+      //      the target (`challengerId` is us, `destUser*` is them).
+      //      Many bots auto-decline bot-vs-bot to stay under Lichess's
+      //      bot.vsBot.day rate limit.
+      // Compare against our verified id to tell them apart: only
+      // outgoing declines are UI-worthy, since incoming declines
+      // echoing back our own action aren't new information.
+      const myId = useLichessBotStore.getState().verifiedAccount?.id ?? null;
+      const isOutgoing = myId !== null && event.challengerId === myId;
+      if (isOutgoing) {
+        const username = event.destUserName ?? event.destUserId;
+        const prevSet = useLichessBotStore.getState().declinedBotUsernames;
+        const nextSet =
+          username && !prevSet.includes(username) ? [...prevSet, username] : prevSet;
+        useLichessBotStore.setState({
+          lastOutgoingChallengeDecline: {
+            username,
+            reason: event.reason,
+          },
+          declinedBotUsernames: nextSet,
+        });
+      }
       logDebug(
         `challenge ${event.challengeId} declined${event.reason ? ` (${event.reason})` : ""}`,
       );
       break;
+    }
     case "gameFinish":
       // Redundant with the terminal status inside the game stream,
       // which also flips status to "listening". Kept as a defense-
@@ -514,6 +565,8 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       errorMessage: null,
       activeGameId: null,
       lastSentUci: null,
+      lastOutgoingChallengeDecline: null,
+      declinedBotUsernames: [],
 
       refreshHasToken: async () => {
         const hasToken = await invoke<boolean>("lichess_token_has", { slot: BOT_SLOT }).catch(
@@ -594,6 +647,15 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
       setAcceptRated: (acceptRated) => set({ acceptRated }),
       setLagMarginMs: (lagMarginMs) => set({ lagMarginMs }),
+
+      clearOutgoingChallengeDecline: () => set({ lastOutgoingChallengeDecline: null }),
+
+      recordBotChallengeFailure: (username) =>
+        set((state) => ({
+          declinedBotUsernames: state.declinedBotUsernames.includes(username)
+            ? state.declinedBotUsernames
+            : [...state.declinedBotUsernames, username],
+        })),
 
       upgradeToBotAccount: async () => {
         logDebug("requesting bot account upgrade");

@@ -254,7 +254,8 @@ describe("parseLichessAccountEvent", () => {
 
   it("parses a challengeDeclined event, reading the reason from either field name", () => {
     // Lichess docs show `reason`; some accounts of the shape have used
-    // `declineReason` -- both should be surfaced.
+    // `declineReason` -- both should be surfaced. challengerId / destUser
+    // fields default to null when the payload doesn't carry them.
     expect(
       parseLichessAccountEvent(
         JSON.stringify({
@@ -262,7 +263,14 @@ describe("parseLichessAccountEvent", () => {
           challenge: { id: "abcd1234", reason: "variant" },
         }),
       ),
-    ).toEqual({ type: "challengeDeclined", challengeId: "abcd1234", reason: "variant" });
+    ).toEqual({
+      type: "challengeDeclined",
+      challengeId: "abcd1234",
+      reason: "variant",
+      challengerId: null,
+      destUserId: null,
+      destUserName: null,
+    });
     expect(
       parseLichessAccountEvent(
         JSON.stringify({
@@ -270,7 +278,40 @@ describe("parseLichessAccountEvent", () => {
           challenge: { id: "abcd1234", declineReason: "later" },
         }),
       ),
-    ).toEqual({ type: "challengeDeclined", challengeId: "abcd1234", reason: "later" });
+    ).toEqual({
+      type: "challengeDeclined",
+      challengeId: "abcd1234",
+      reason: "later",
+      challengerId: null,
+      destUserId: null,
+      destUserName: null,
+    });
+  });
+
+  it("extracts challenger and destUser from a full challengeDeclined event", () => {
+    // Shape for an *outgoing* decline (we challenged, they said no):
+    // challenger is us, destUser is them. The LichessBotControls UI
+    // uses this to display "maia1 declined: ..." and to filter maia1
+    // out of the online-bots list for the session.
+    const parsed = parseLichessAccountEvent(
+      JSON.stringify({
+        type: "challengeDeclined",
+        challenge: {
+          id: "abcd1234",
+          reason: "noBot",
+          challenger: { id: "jk-bot", name: "jk-bot" },
+          destUser: { id: "maia1", name: "maia1" },
+        },
+      }),
+    );
+    expect(parsed).toEqual({
+      type: "challengeDeclined",
+      challengeId: "abcd1234",
+      reason: "noBot",
+      challengerId: "jk-bot",
+      destUserId: "maia1",
+      destUserName: "maia1",
+    });
   });
 
   it("parses a gameFinish event", () => {
