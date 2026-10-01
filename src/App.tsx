@@ -13,6 +13,7 @@ import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
 import { PlaybackControls } from "./components/PlaybackControls";
 import { SessionControl } from "./components/SessionControl";
+import { WinnerBanner } from "./components/WinnerBanner";
 import { useAppliedTheme } from "./hooks/useAppliedTheme";
 import { useViewMenu } from "./hooks/useViewMenu";
 import { fenAtPly } from "./lib/chessRules";
@@ -60,6 +61,7 @@ function App() {
       </header>
       <main className="app-body">
         <div className="board-panel">
+          <WinnerBanner />
           <BoardScene fen={fen} cameraMode={cameraMode} theme={theme} />
           <PlaybackControls />
         </div>
