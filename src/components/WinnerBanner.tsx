@@ -81,11 +81,15 @@ export function WinnerBanner() {
     const winner = sideToMove(endFen) === "w" ? "b" : "w";
     message = `${names[winner]} wins by checkmate`;
   } else if (status.reason === "variantEnd") {
-    // KotH: the side NOT to move just centered their king and won
-    // (same convention as checkmate -- the mover of the game-ending
-    // ply has already flipped side_to_move away from themselves).
+    // Variant-specific terminal: the side NOT to move just delivered
+    // the winning condition (KotH king-on-center, 3check 3rd check,
+    // ...) and the mover's ply flipped side_to_move. Winner = NOT the
+    // side to move at the final FEN.
     const winner = sideToMove(endFen) === "w" ? "b" : "w";
-    message = `${names[winner]} wins by King of the Hill`;
+    const label = rules === "koth" ? "King of the Hill" :
+                  rules === "3check" ? "three-check" :
+                  "variant end";
+    message = `${names[winner]} wins by ${label}`;
   } else if (status.reason === "stalemate") {
     message = `Draw by stalemate — ${names.w} vs ${names.b}`;
   } else {
