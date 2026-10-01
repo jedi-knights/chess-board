@@ -480,7 +480,15 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
 
   clearToken: async () => {
     await invoke("lichess_token_clear", { slot: HUMAN_SLOT });
-    set({ hasToken: false, verifiedAccount: null, verifyError: null });
+    // Also clears `errorMessage` -- a stale connect/seek failure from
+    // the previous session would otherwise linger even after the user
+    // has acted on it by clearing the token.
+    set({
+      hasToken: false,
+      verifiedAccount: null,
+      verifyError: null,
+      errorMessage: null,
+    });
   },
 
   verifyAccount: async () => {
