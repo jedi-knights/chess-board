@@ -16,18 +16,24 @@ const PX_PER_UNIT = 128;
  * texture is sized 8 x BORDER_WIDTH world units so letters appear
  * un-stretched when mapped to the horizontal border planes.
  *
- * `povBlack` rotates the canvas 180 degrees via a point reflection, same
- * mechanism as createGlyphTexture's `flip` parameter -- the border mesh's
- * fixed world-space rotation reads correctly for one POV and upside-down
- * for the other, and correcting that in 2D canvas space (rather than
- * via a second 3D rotation of the mesh) is far easier to verify by looking
- * at the drawn pixels.
+ * Each glyph is rotated in place (around its own center), not via a
+ * whole-canvas pre-transform -- a whole-canvas translate+rotate moves
+ * *where* a glyph ends up on the mesh as well as how it reads, which
+ * silently re-breaks the position mapping for whichever POV doesn't get
+ * the rotation (confirmed by working through the actual screen-space
+ * projection: for the camera positions/up-vectors this app uses, POV
+ * white's un-rotated mapping comes out net-flipped on screen while POV
+ * black's does not -- see createRankStripTexture's longer derivation
+ * comment, which applies identically here since both strips go through
+ * the same mesh rotation and texture.flipY chain). Rotating per-glyph
+ * around its own already-correct position fixes readability without
+ * touching where each letter sits.
  */
 /* v8 ignore start -- DOM canvas API unavailable in vitest's node test environment; see vite.config.ts */
 export function createFileStripTexture(
   frameColor: string,
   textColor: string,
-  povBlack: boolean,
+  pov: "w" | "b",
 ): CanvasTexture {
   const widthUnits = 8;
   const heightUnits = BORDER_WIDTH;
@@ -42,20 +48,24 @@ export function createFileStripTexture(
   ctx.fillStyle = frameColor;
   ctx.fillRect(0, 0, width, height);
 
-  if (povBlack) {
-    ctx.translate(width, height);
-    ctx.rotate(Math.PI);
-  }
-
   const fontSize = height * 0.6;
   ctx.font = `bold ${fontSize}px "Segoe UI", "Helvetica Neue", "Arial", sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = textColor;
+  const flip = pov === "w";
   for (let i = 0; i < 8; i++) {
     const x = (i + 0.5) * PX_PER_UNIT;
     const y = height / 2;
-    ctx.fillText(FILES[i], x, y);
+    if (flip) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(Math.PI);
+      ctx.fillText(FILES[i], 0, 0);
+      ctx.restore();
+    } else {
+      ctx.fillText(FILES[i], x, y);
+    }
   }
 
   const texture = new CanvasTexture(canvas);
@@ -66,15 +76,32 @@ export function createFileStripTexture(
 
 /**
  * Renders rank labels (1-8) vertically along a thin strip. Returned
- * texture is sized BORDER_WIDTH x 8 world units. Rank 1 is drawn at the
- * canvas row that maps to world Z = -3.5 (White's home side), matching
- * squareToPosition's indexing in boardGeometry.ts.
+ * texture is sized BORDER_WIDTH x 8 world units.
+ *
+ * Position: canvas Y maps to world Z via texture.flipY (default true) and
+ * the mesh's [-PI/2, 0, 0] rotation. Tracing it through -- flipY means
+ * canvas row 0 (top) maps to the plane geometry's local y=+height/2, and
+ * the rotation maps local (x, y, 0) to world (x, 0, -y) -- so canvas-top
+ * (small y, large local y) lands at world Z = -height/2, i.e. **White's**
+ * home side, not Black's. So rank "1" (White's home rank, world Z=-3.5)
+ * belongs near canvas y=0, rank "8" near canvas y=height. This is the
+ * opposite of what an earlier version of this comment claimed -- verified
+ * both by re-deriving the rotation matrix directly and by comparing
+ * against a live screenshot, where the previous `rankIndex = 7 - i`
+ * mapping put rank "1"'s label on Black's home square.
+ *
+ * Orientation: working the same rotation through to actual on-screen
+ * projection (camera position/up-vector for each POV) shows POV white's
+ * un-rotated glyph reads upside-down on screen while POV black's reads
+ * correctly as-is -- so only POV white needs the in-place 180 deg flip.
+ * This is the opposite of the previous `povBlack` flag's condition, which
+ * flipped for Black and left White un-rotated.
  */
 /* v8 ignore start -- DOM canvas API unavailable in vitest's node test environment; see vite.config.ts */
 export function createRankStripTexture(
   frameColor: string,
   textColor: string,
-  povBlack: boolean,
+  pov: "w" | "b",
 ): CanvasTexture {
   const widthUnits = BORDER_WIDTH;
   const heightUnits = 8;
@@ -89,26 +116,24 @@ export function createRankStripTexture(
   ctx.fillStyle = frameColor;
   ctx.fillRect(0, 0, width, height);
 
-  if (povBlack) {
-    ctx.translate(width, height);
-    ctx.rotate(Math.PI);
-  }
-
   const fontSize = width * 0.6;
   ctx.font = `bold ${fontSize}px "Segoe UI", "Helvetica Neue", "Arial", sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = textColor;
-  // Canvas Y maps to world Z (with flipY=true default): canvas y=0 is the
-  // -Z-pointing edge of the plane in local space, which after the mesh's
-  // [-PI/2, 0, 0] rotation and the UV flip ends up at world +Z (Black's
-  // home). So rank 8 (world z=+3.5) belongs near canvas top, rank 1 near
-  // canvas bottom.
+  const flip = pov === "w";
   for (let i = 0; i < 8; i++) {
     const y = (i + 0.5) * PX_PER_UNIT;
     const x = width / 2;
-    const rankIndex = 7 - i;
-    ctx.fillText(RANKS[rankIndex], x, y);
+    if (flip) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(Math.PI);
+      ctx.fillText(RANKS[i], 0, 0);
+      ctx.restore();
+    } else {
+      ctx.fillText(RANKS[i], x, y);
+    }
   }
 
   const texture = new CanvasTexture(canvas);
