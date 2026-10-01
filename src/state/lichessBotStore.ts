@@ -526,7 +526,17 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
 
       clearToken: async () => {
         await invoke("lichess_token_clear", { slot: BOT_SLOT });
-        set({ hasToken: false, verifiedAccount: null, verifyError: null });
+        // Also clears `errorMessage` -- a stale "no bot token is set" or
+        // other upgrade/listen failure from the previous session would
+        // otherwise linger even after the user has acted on it by
+        // clearing the token. Same rationale as engineStore.stopEngine's
+        // own errorMessage clear.
+        set({
+          hasToken: false,
+          verifiedAccount: null,
+          verifyError: null,
+          errorMessage: null,
+        });
       },
 
       verifyAccount: async () => {
