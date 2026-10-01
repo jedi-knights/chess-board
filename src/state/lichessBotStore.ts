@@ -340,7 +340,21 @@ function buildBotGoOptions(botColor: "w" | "b"): GoOptions {
 }
 
 async function handleGameStart(gameId: string, botColor: "w" | "b") {
-  const { enginePath, movetimeMs } = useLichessBotStore.getState();
+  const state = useLichessBotStore.getState();
+  // Lichess's `/api/stream/event` catches you up on current state on every
+  // reconnect: if a game is already in progress, you get a *fresh*
+  // `gameStart` for it. Without this guard a reconnect would run the full
+  // handleGameStart path again, which calls `startNewGame({...})` and
+  // resets `plies` to []. The engine would then recompute from startpos
+  // and send `e2e4` to a server whose real state has moved on, producing
+  // "Piece on e2 cannot move to e4" 400s and tight-looping (debug.log
+  // showed this behavior on 2026-09-30). Human mode is already immune via
+  // `connectImpl`'s NOT_CONNECTED gate; this is the bot-side mirror.
+  if (state.activeGameId === gameId && state.status === "playing") {
+    logDebug(`duplicate gameStart for active game ${gameId}; ignoring`);
+    return;
+  }
+  const { enginePath, movetimeMs } = state;
   if (!enginePath) {
     failBot("a game started, but no engine binary is selected");
     return;
