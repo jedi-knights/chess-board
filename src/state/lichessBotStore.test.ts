@@ -278,11 +278,11 @@ describe("account event stream routes challenges through decideChallenge", () =>
     expect(useLichessBotStore.getState().pendingRules).toBe("chess960");
   });
 
-  it("declines remaining-unsupported variants (crazyhouse) with reason 'variant'", async () => {
+  it("declines unknown variant keys with reason 'variant'", async () => {
     await startBotListening();
     mockedInvoke.mockClear();
 
-    emitAccountEvent(fullChallenge({ variant: { key: "crazyhouse" } }));
+    emitAccountEvent(fullChallenge({ variant: { key: "nonexistent" } }));
     await new Promise((r) => setTimeout(r, 0));
 
     expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {

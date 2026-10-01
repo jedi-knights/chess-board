@@ -393,6 +393,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
                 side,
                 line: buildSetOptionCommand("UCI_Variant", "antichess"),
               });
+            } else if (activeRules === "crazyhouse") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Variant", "crazyhouse"),
+              });
             }
             set({ status: "ready" });
             logDebug("engine ready");
