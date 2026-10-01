@@ -462,10 +462,11 @@ export function parseLichessAccountEvent(raw: string): LichessAccountEvent | nul
  * any future code path) stays in sync. Unknown variants collapse to
  * `"chess"` -- `decideChallenge` already refuses them, so this is a
  * defense-in-depth default. */
-export function rulesFromLichessVariant(variant: string | null): "chess" | "chess960" | "koth" | "3check" {
+export function rulesFromLichessVariant(variant: string | null): "chess" | "chess960" | "koth" | "3check" | "horde" {
   if (variant === "chess960") return "chess960";
   if (variant === "kingOfTheHill") return "koth";
   if (variant === "threeCheck") return "3check";
+  if (variant === "horde") return "horde";
   return "chess";
 }
 
@@ -540,6 +541,7 @@ export function decideChallenge(
     && challenge.variant !== "chess960"
     && challenge.variant !== "kingOfTheHill"
     && challenge.variant !== "threeCheck"
+    && challenge.variant !== "horde"
   ) {
     return { kind: "decline", reason: "variant" };
   }

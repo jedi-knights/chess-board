@@ -373,6 +373,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
                 side,
                 line: buildSetOptionCommand("UCI_Variant", "threeCheck"),
               });
+            } else if (activeRules === "horde") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Variant", "horde"),
+              });
             }
             set({ status: "ready" });
             logDebug("engine ready");

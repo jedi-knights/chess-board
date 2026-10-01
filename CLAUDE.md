@@ -226,6 +226,14 @@ this file and the human-facing docs.
   (bot) / stop-game (human). Not re-architected here -- noted so future "why
   can't I switch modes" shows up as a user-ergonomics follow-up rather than a
   correctness bug.
+- **Horde is accepted.** `Rules` union gains `"horde"`;
+  `rulesFromLichessVariant` maps the Lichess `"horde"` key through.
+  `chessRules.ts` routes to chessops' `Horde` class, which handles the
+  asymmetric starting position (WHITE: 36 pawns ranks 1-4, no king;
+  BLACK: standard pieces), the rank-1 pawn double-push, and the
+  "WHITE has no pieces" / "stalemate = loss" terminal rules.
+  `engineStore` sends `setoption name UCI_Variant value horde`.
+  WinnerBanner shows "X wins by horde" when variantEnd fires.
 - **Three-check is accepted.** `Rules` union gains `"3check"`;
   `rulesFromLichessVariant` maps `"threeCheck"` -> `"3check"`.
   `engineStore.startEngine` sends `setoption name UCI_Variant value
