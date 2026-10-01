@@ -12,6 +12,7 @@ import { LiveGameClocks } from "./components/LiveGameClocks";
 import { MoveList } from "./components/MoveList";
 import { MoveLog } from "./components/MoveLog";
 import { PlaybackControls } from "./components/PlaybackControls";
+import { SessionControl } from "./components/SessionControl";
 import { useAppliedTheme } from "./hooks/useAppliedTheme";
 import { useViewMenu } from "./hooks/useViewMenu";
 import { fenAtPly } from "./lib/chessRules";
@@ -55,6 +56,7 @@ function App() {
     <div className="app">
       <header className="app-header">
         <h1>{GAME_MODE_LABELS[gameModePreset]}</h1>
+        <SessionControl />
       </header>
       <main className="app-body">
         <div className="board-panel">
