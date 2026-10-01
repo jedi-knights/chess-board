@@ -46,7 +46,16 @@ interface MoveHighlightsProps {
 export function MoveHighlights({ fen }: MoveHighlightsProps) {
   const selectedSquare = useGameStore((s) => s.selectedSquare);
   const legalDestinationSquares = useGameStore((s) => s.legalDestinationSquares);
-  const check = checkStatus(fen);
+  const ply = useGameStore((s) => s.ply);
+  const totalPlies = useGameStore((s) => s.plies.length);
+  // The check/checkmate ring reflects the *live* game state, not whatever
+  // historical position the reviewer happens to be scrubbed to. Stepping
+  // off the final ply mid-replay otherwise leaves a stale checkmate ring
+  // visible on intermediate positions that aren't checkmated themselves.
+  const atLivePosition = ply === totalPlies;
+  const check = atLivePosition
+    ? checkStatus(fen)
+    : { inCheck: false, checkmate: false, kingSquare: null };
 
   return (
     <>
