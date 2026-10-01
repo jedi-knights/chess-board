@@ -439,6 +439,68 @@ describe("handleGameStart between-games reuse (ucinewgame)", () => {
   });
 });
 
+describe("handleGameStart duplicate-event guard", () => {
+  it("ignores a duplicate gameStart for the same gameId while already playing", async () => {
+    await startBotListening();
+    useLichessBotStore.setState({ enginePath: "/bin/engine" });
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+
+    // First gameStart -- normal path, status flips to "playing".
+    emitAccountEvent({ type: "gameStart", game: { gameId: "gameDup", color: "white" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useLichessBotStore.getState().status).toBe("playing");
+    expect(useLichessBotStore.getState().activeGameId).toBe("gameDup");
+
+    mockedInvoke.mockClear();
+
+    // Simulate the account event stream reconnecting and Lichess catching
+    // us up with a fresh gameStart for the already-active game. Without
+    // the guard, startNewGame would reset `plies` to [] and the engine
+    // would recompute from startpos, producing the "Piece on e2 cannot
+    // move to e4" 400 loop seen in debug.log 2026-09-30.
+    emitAccountEvent({ type: "gameStart", game: { gameId: "gameDup", color: "white" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // No ucinewgame / engine_start / lichess_bot_stream_game call on the
+    // duplicate -- the handler returned early.
+    expect(mockedInvoke).not.toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "ucinewgame",
+    });
+    expect(mockedInvoke).not.toHaveBeenCalledWith("engine_start", expect.anything());
+    expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_bot_stream_game", expect.anything());
+  });
+
+  it("does not fire the guard for a different gameId", async () => {
+    // Precondition: already playing one game. A gameStart for a *different*
+    // gameId must bypass the guard (it's not the duplicate case) so the
+    // normal reset/start path runs. In practice this shouldn't happen
+    // -- decideChallenge declines concurrent challenges with "later" --
+    // but if it slips through, we don't want the guard to silently
+    // suppress it.
+    await startBotListening();
+    useLichessBotStore.setState({
+      enginePath: "/bin/engine",
+      status: "playing",
+      activeGameId: "gameA",
+    });
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+    mockedInvoke.mockClear();
+
+    emitAccountEvent({ type: "gameStart", game: { gameId: "gameB", color: "white" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Guard did not fire: activeGameId was updated to the new game.
+    expect(useLichessBotStore.getState().activeGameId).toBe("gameB");
+  });
+});
+
 describe("handleGameStart installs a clock-driven goBuilder", () => {
   it("go includes wtime/btime/winc/binc + movetime cap once server clocks arrive", async () => {
     // Fix Date.now() so the elapsed-since-server-update subtraction is
