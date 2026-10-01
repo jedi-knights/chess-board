@@ -383,6 +383,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
                 side,
                 line: buildSetOptionCommand("UCI_Variant", "racingKings"),
               });
+            } else if (activeRules === "atomic") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Variant", "atomic"),
+              });
             }
             set({ status: "ready" });
             logDebug("engine ready");

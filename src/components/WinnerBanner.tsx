@@ -90,6 +90,7 @@ export function WinnerBanner() {
                   rules === "3check" ? "three-check" :
                   rules === "horde" ? "horde" :
                   rules === "racingkings" ? "Racing Kings" :
+                  rules === "atomic" ? "atomic" :
                   "variant end";
     message = `${names[winner]} wins by ${label}`;
   } else if (status.reason === "stalemate") {
