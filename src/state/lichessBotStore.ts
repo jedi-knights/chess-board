@@ -7,6 +7,7 @@ import {
   isTerminalStatus,
   parseLichessLine,
   parseLichessOpponentGone,
+  rulesFromLichessVariant,
   type LichessAccountEvent,
   type LichessAccountInfo,
   type LichessChallengeEvent,
@@ -316,7 +317,7 @@ async function handleChallenge(challenge: LichessChallengeEvent) {
     // leave this null, which is also the default.
     useLichessBotStore.setState({
       pendingStartFen: challenge.initialFen,
-      pendingRules: challenge.variant === "chess960" ? "chess960" : "chess",
+      pendingRules: rulesFromLichessVariant(challenge.variant),
     });
     await acceptChallenge(challenge.challengeId);
   } else if (decision.kind === "decline") {
@@ -551,7 +552,7 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
     useGameStore.getState().setStartFen(update.initialFen);
   }
   if (update.variant !== null) {
-    useGameStore.getState().setRules(update.variant === "chess960" ? "chess960" : "chess");
+    useGameStore.getState().setRules(rulesFromLichessVariant(update.variant));
   }
 
   // Same movesToApply diff as lichessStore's human-play path -- it's

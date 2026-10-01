@@ -89,6 +89,24 @@ describe("fenAtPly", () => {
   });
 });
 
+describe("gameStatus KotH", () => {
+  // Pawns prevent the standard "insufficient material" draw so the
+  // only difference between chess and koth terminal detection here is
+  // the king-on-center condition.
+  const kingOnCenterFen = "4k3/pppppppp/8/8/4K3/8/PPPPPPPP/8 w - - 0 1";
+
+  it("returns `variantEnd` when a king is on a center square and variant is koth", () => {
+    const status = gameStatus(kingOnCenterFen, "koth");
+    expect(status.over).toBe(true);
+    if (status.over) expect(status.reason).toBe("variantEnd");
+  });
+
+  it("returns `over:false` for the same FEN when variant defaults to chess", () => {
+    const status = gameStatus(kingOnCenterFen);
+    expect(status.over).toBe(false);
+  });
+});
+
 describe("sideToMove", () => {
   it("reads white to move from the starting position", () => {
     expect(sideToMove("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")).toBe(

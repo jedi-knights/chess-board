@@ -457,6 +457,17 @@ export function parseLichessAccountEvent(raw: string): LichessAccountEvent | nul
   return null;
 }
 
+/** Maps a Lichess variant key to the chess-board-internal `Rules`
+ * value. Centralized here so every consumer (both Lichess stores plus
+ * any future code path) stays in sync. Unknown variants collapse to
+ * `"chess"` -- `decideChallenge` already refuses them, so this is a
+ * defense-in-depth default. */
+export function rulesFromLichessVariant(variant: string | null): "chess" | "chess960" | "koth" {
+  if (variant === "chess960") return "chess960";
+  if (variant === "kingOfTheHill") return "koth";
+  return "chess";
+}
+
 export interface ChallengeDecisionContext {
   /** The account id this store's slot is verified as, so a self-challenge
    * (challenger.id === myAccountId) can be detected and dropped locally
@@ -519,11 +530,15 @@ export function decideChallenge(
   if (ctx.activeGameId) {
     return { kind: "decline", reason: "later" };
   }
-  // Chess960 is accepted: chessops handles its castling rules natively,
-  // and the engine ships `setoption name UCI_Chess960 value true` when
-  // the game starts. Other Lichess variants still fail here until each
-  // one lands as its own PR with engine-side movegen support.
-  if (challenge.variant !== "standard" && challenge.variant !== "chess960") {
+  // Chess960 and King of the Hill are accepted. Chess960 ships
+  // `setoption name UCI_Chess960 value true` on engine start; KotH ships
+  // `setoption name UCI_Variant value kingofthehill`. Other Lichess
+  // variants still fail here until each lands as its own engine PR.
+  if (
+    challenge.variant !== "standard"
+    && challenge.variant !== "chess960"
+    && challenge.variant !== "kingOfTheHill"
+  ) {
     return { kind: "decline", reason: "variant" };
   }
   // Custom starting positions ("From Position") are accepted now that

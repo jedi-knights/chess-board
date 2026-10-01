@@ -6,6 +6,7 @@ import {
   parseLichessAccountEvent,
   parseLichessLine,
   parseLichessOpponentGone,
+  rulesFromLichessVariant,
   type ChallengeDecisionContext,
   type LichessChallengeEvent,
 } from "./lichess";
@@ -534,12 +535,26 @@ describe("decideChallenge", () => {
     ).toEqual({ kind: "accept" });
   });
 
-  it("still declines other variants (atomic, antichess, etc.) with reason 'variant'", () => {
+  it("rulesFromLichessVariant maps Lichess variant keys to internal Rules", () => {
+    expect(rulesFromLichessVariant("standard")).toBe("chess");
+    expect(rulesFromLichessVariant("chess960")).toBe("chess960");
+    expect(rulesFromLichessVariant("kingOfTheHill")).toBe("koth");
+    expect(rulesFromLichessVariant(null)).toBe("chess");
+    expect(rulesFromLichessVariant("atomic")).toBe("chess");  // unknown collapses
+  });
+
+  it("accepts a King of the Hill challenge now that UCI_Variant is wired", () => {
+    expect(
+      decideChallenge(baseChallenge({ variant: "kingOfTheHill" }), CTX_DEFAULT),
+    ).toEqual({ kind: "accept" });
+  });
+
+  it("still declines variants that have no engine support yet (atomic, antichess, ...)", () => {
     expect(
       decideChallenge(baseChallenge({ variant: "atomic" }), CTX_DEFAULT),
     ).toEqual({ kind: "decline", reason: "variant" });
     expect(
-      decideChallenge(baseChallenge({ variant: "kingOfTheHill" }), CTX_DEFAULT),
+      decideChallenge(baseChallenge({ variant: "antichess" }), CTX_DEFAULT),
     ).toEqual({ kind: "decline", reason: "variant" });
   });
 
