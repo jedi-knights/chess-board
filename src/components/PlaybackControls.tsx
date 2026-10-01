@@ -29,6 +29,19 @@ export function PlaybackControls() {
   const disabled = totalPlies === 0;
   const atStart = ply === 0;
   const atEnd = ply === totalPlies;
+  // At end + not playing: button rewinds + starts in one click rather than
+  // forcing |< then Play. Label swaps to "Replay" so the single-click
+  // behavior is discoverable, not a silent re-interpretation of "Play".
+  const canReplay = atEnd && totalPlies > 0 && !playing;
+  const playLabel = playing ? "Pause" : canReplay ? "Replay" : "Play";
+  const onPlayClick = () => {
+    if (canReplay) {
+      goToStart();
+      setPlaying(true);
+      return;
+    }
+    setPlaying((p) => !p);
+  };
 
   return (
     <div className="playback-controls">
@@ -38,8 +51,8 @@ export function PlaybackControls() {
       <button onClick={stepBackward} disabled={disabled || atStart} aria-label="Step back">
         &lt;
       </button>
-      <button onClick={() => setPlaying((p) => !p)} disabled={disabled}>
-        {playing ? "Pause" : "Play"}
+      <button onClick={onPlayClick} disabled={disabled}>
+        {playLabel}
       </button>
       <button onClick={stepForward} disabled={disabled || atEnd} aria-label="Step forward">
         &gt;
