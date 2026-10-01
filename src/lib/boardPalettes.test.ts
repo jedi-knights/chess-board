@@ -10,6 +10,8 @@ describe("boardPalettes", () => {
       expect(palette.light).not.toBe(palette.dark);
       expect(palette.light).toMatch(/^#[0-9A-Fa-f]{6}$/);
       expect(palette.dark).toMatch(/^#[0-9A-Fa-f]{6}$/);
+      expect(palette.frame).toMatch(/^#[0-9A-Fa-f]{6}$/);
+      expect(palette.frameText).toMatch(/^#[0-9A-Fa-f]{6}$/);
     }
   });
 
@@ -19,6 +21,8 @@ describe("boardPalettes", () => {
       label: "Classic",
       light: "#EDD6B0",
       dark: "#8B5A2B",
+      frame: "#3E2817",
+      frameText: "#EDD6B0",
     });
   });
 });
