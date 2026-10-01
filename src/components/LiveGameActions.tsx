@@ -17,30 +17,49 @@ import { useLichessStore } from "../state/lichessStore";
  * games or before the first move.
  */
 export function LiveGameActions() {
+  // Each selector returns a *stable* reference so Zustand's default
+  // Object.is equality skips the re-render -- a composite selector
+  // like `(s) => ({ a: s.a, b: s.b })` would allocate a fresh object
+  // on every call and cause an infinite render loop ("Maximum update
+  // depth exceeded" / "getSnapshot should be cached"). The action
+  // functions are closures captured at store-creation time, so each
+  // read returns the same reference every time.
   const humanStatus = useLichessStore((s) => s.status);
   const humanGone = useLichessStore((s) => s.opponentGone);
-  const humanActions = useLichessStore((s) => ({
-    resign: s.resign,
-    abort: s.abort,
-    agreeToDraw: s.agreeToDraw,
-    declineDraw: s.declineDraw,
-    claimVictory: s.claimVictory,
-  }));
+  const humanResign = useLichessStore((s) => s.resign);
+  const humanAbort = useLichessStore((s) => s.abort);
+  const humanAgreeToDraw = useLichessStore((s) => s.agreeToDraw);
+  const humanDeclineDraw = useLichessStore((s) => s.declineDraw);
+  const humanClaimVictory = useLichessStore((s) => s.claimVictory);
 
   const botStatus = useLichessBotStore((s) => s.status);
   const botGone = useLichessBotStore((s) => s.opponentGone);
-  const botActions = useLichessBotStore((s) => ({
-    resign: s.resign,
-    abort: s.abort,
-    agreeToDraw: s.agreeToDraw,
-    declineDraw: s.declineDraw,
-    claimVictory: s.claimVictory,
-  }));
+  const botResign = useLichessBotStore((s) => s.resign);
+  const botAbort = useLichessBotStore((s) => s.abort);
+  const botAgreeToDraw = useLichessBotStore((s) => s.agreeToDraw);
+  const botDeclineDraw = useLichessBotStore((s) => s.declineDraw);
+  const botClaimVictory = useLichessBotStore((s) => s.claimVictory);
 
   const plies = useGameStore((s) => s.plies);
   const humanLive = humanStatus === "connected";
   const botLive = botStatus === "playing";
-  const actions = humanLive ? humanActions : botLive ? botActions : null;
+  const actions = humanLive
+    ? {
+        resign: humanResign,
+        abort: humanAbort,
+        agreeToDraw: humanAgreeToDraw,
+        declineDraw: humanDeclineDraw,
+        claimVictory: humanClaimVictory,
+      }
+    : botLive
+      ? {
+          resign: botResign,
+          abort: botAbort,
+          agreeToDraw: botAgreeToDraw,
+          declineDraw: botDeclineDraw,
+          claimVictory: botClaimVictory,
+        }
+      : null;
   const opponentGone = humanLive ? humanGone : botLive ? botGone : null;
 
   // The countdown displayed to the user ticks locally between server
