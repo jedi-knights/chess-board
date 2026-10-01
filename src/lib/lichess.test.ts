@@ -540,6 +540,7 @@ describe("decideChallenge", () => {
     expect(rulesFromLichessVariant("chess960")).toBe("chess960");
     expect(rulesFromLichessVariant("kingOfTheHill")).toBe("koth");
     expect(rulesFromLichessVariant("threeCheck")).toBe("3check");
+    expect(rulesFromLichessVariant("horde")).toBe("horde");
     expect(rulesFromLichessVariant(null)).toBe("chess");
     expect(rulesFromLichessVariant("atomic")).toBe("chess");  // unknown collapses
   });
@@ -553,6 +554,12 @@ describe("decideChallenge", () => {
   it("accepts a Three-check challenge now that UCI_Variant handles threeCheck", () => {
     expect(
       decideChallenge(baseChallenge({ variant: "threeCheck" }), CTX_DEFAULT),
+    ).toEqual({ kind: "accept" });
+  });
+
+  it("accepts a Horde challenge now that engine-side Horde support is wired", () => {
+    expect(
+      decideChallenge(baseChallenge({ variant: "horde" }), CTX_DEFAULT),
     ).toEqual({ kind: "accept" });
   });
 

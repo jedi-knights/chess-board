@@ -1,5 +1,5 @@
 import { Chess } from "chessops/chess";
-import { KingOfTheHill, ThreeCheck } from "chessops/variant";
+import { Horde, KingOfTheHill, ThreeCheck } from "chessops/variant";
 import { parseFen, makeFen } from "chessops/fen";
 import { parsePgn as parseChessopsPgn, parseComment } from "chessops/pgn";
 import { parseSan, makeSanAndPlay } from "chessops/san";
@@ -66,7 +66,7 @@ const colorChar = (color: Color): "w" | "b" => (color === "white" ? "w" : "b");
  * share movegen + terminals ("chess" is the shared default); KotH
  * adds the center-square win condition via chessops' KingOfTheHill
  * class. Future variants (threeCheck, antichess, etc.) extend this. */
-export type Variant = "chess" | "chess960" | "koth" | "3check";
+export type Variant = "chess" | "chess960" | "koth" | "3check" | "horde";
 
 /** Position loader shared by every function below -- `parseFen` returns
  * a `Result`, so a malformed FEN surfaces as `null` here rather than an
@@ -83,11 +83,11 @@ function loadPosition(fen: string, variant: Variant = "chess"): Chess | null {
   const setupRes = parseFen(fen);
   if (!setupRes.isOk) return null;
   const setup = setupRes.unwrap();
-  const posRes = variant === "koth"
-    ? KingOfTheHill.fromSetup(setup)
-    : variant === "3check"
-      ? ThreeCheck.fromSetup(setup)
-      : Chess.fromSetup(setup);
+  const posRes =
+    variant === "koth"    ? KingOfTheHill.fromSetup(setup)
+    : variant === "3check" ? ThreeCheck.fromSetup(setup)
+    : variant === "horde"  ? Horde.fromSetup(setup)
+    : Chess.fromSetup(setup);
   return posRes.isOk ? posRes.unwrap() : null;
 }
 
