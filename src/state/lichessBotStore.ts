@@ -34,6 +34,30 @@ const BOT_SLOT = "bot" as const;
  * a longer one would hide a bot that's since freed up. */
 const DEFAULT_DECLINE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** How long to hide a bot that refused bot-vs-bot challenges as a
+ * policy (`noBot` decline reason / "I'm not accepting challenges
+ * from bots." text). Set to one year rather than Infinity so the
+ * entry eventually ages out in the pathological case where the bot
+ * operator reconfigures their account to accept bots -- but
+ * practically "forever" from the user's perspective. */
+const NO_BOT_DECLINE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** Detects whether a decline reason indicates a policy refusal of
+ * bot-vs-bot challenges, as opposed to a rate-limit or variant
+ * objection. Matches both the structured enum tag (`noBot`) and the
+ * human-readable text Lichess surfaces by default when a bot sends
+ * the reason, so this works whether the account stream delivered us
+ * the code or the pre-formatted sentence. */
+export function isNoBotPolicyDecline(reason: string | null): boolean {
+  if (!reason) return false;
+  if (reason === "noBot") return true;
+  const normalized = reason.toLowerCase();
+  return (
+    normalized.includes("challenges from bots") ||
+    normalized.includes("challenges from bot accounts")
+  );
+}
+
 /** Adds-or-refreshes an entry in the declined-bots list. If the
  * username is already there, bumps its `expiresAtMs` to the later of
  * the two (new attempt resets the clock, same shape as a sliding TTL).
@@ -531,13 +555,21 @@ function routeAccountEvent(event: LichessAccountEvent) {
       const isOutgoing = myId !== null && event.challengerId === myId;
       if (isOutgoing) {
         const username = event.destUserName ?? event.destUserId;
+        // A `noBot` policy refusal is permanent-ish (bot operator opted
+        // out of bot-vs-bot play) -- hide for ~a year rather than a
+        // day. Rate-limit declines ("later", "generic" + ratelimit
+        // body) and variant/time-control objections stay on the 24 h
+        // default because they're transient.
+        const ttlMs = isNoBotPolicyDecline(event.reason)
+          ? NO_BOT_DECLINE_TTL_MS
+          : DEFAULT_DECLINE_TTL_MS;
         useLichessBotStore.setState((state) => ({
           lastOutgoingChallengeDecline: {
             username,
             reason: event.reason,
           },
           declinedBots: username
-            ? upsertDeclinedBot(state.declinedBots, username, DEFAULT_DECLINE_TTL_MS)
+            ? upsertDeclinedBot(state.declinedBots, username, ttlMs)
             : state.declinedBots,
         }));
       }

@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useBlackEngineStore, useWhiteEngineStore } from "./engineStore";
 import { useGameModeStore } from "./gameModeStore";
 import { useGameStore } from "./gameStore";
-import { parseRateLimitSeconds, useLichessBotStore } from "./lichessBotStore";
+import {
+  isNoBotPolicyDecline,
+  parseRateLimitSeconds,
+  useLichessBotStore,
+} from "./lichessBotStore";
 
 // Same rationale as engineStore.test.ts / lichessStore.test.ts: `invoke`
 // and `listen` are Tauri's IPC boundary, a genuine system edge. Everything
@@ -697,5 +701,35 @@ describe("parseRateLimitSeconds", () => {
   it("returns null for non-positive or non-finite values", () => {
     expect(parseRateLimitSeconds('"seconds":0')).toBeNull();
     expect(parseRateLimitSeconds('"seconds":-5')).toBeNull();
+  });
+});
+
+describe("isNoBotPolicyDecline", () => {
+  it("matches the Lichess structured enum tag", () => {
+    expect(isNoBotPolicyDecline("noBot")).toBe(true);
+  });
+
+  it("matches the human-readable text Lichess surfaces by default", () => {
+    // The exact phrasing in the user's actual debug.log on a bot that
+    // refused jk-bot. Keep this test wired to the verbatim string so
+    // a future Lichess rewording surfaces as a test failure, not a
+    // silent regression where the pattern stops matching.
+    expect(isNoBotPolicyDecline("I'm not accepting challenges from bots.")).toBe(true);
+    expect(isNoBotPolicyDecline("Not accepting challenges from bot accounts")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isNoBotPolicyDecline("I DON'T ACCEPT CHALLENGES FROM BOTS")).toBe(true);
+  });
+
+  it("does not match transient decline reasons", () => {
+    expect(isNoBotPolicyDecline("later")).toBe(false);
+    expect(isNoBotPolicyDecline("rated")).toBe(false);
+    expect(isNoBotPolicyDecline("timeControl")).toBe(false);
+    expect(isNoBotPolicyDecline("Not right now, please try again later")).toBe(false);
+  });
+
+  it("does not match on `null` reasons", () => {
+    expect(isNoBotPolicyDecline(null)).toBe(false);
   });
 });
