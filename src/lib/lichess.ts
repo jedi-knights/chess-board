@@ -506,9 +506,13 @@ export function decideChallenge(
   // startFen is plumbed through gameStore / uci.ts. Lichess validates
   // the FEN before issuing the challenge, so a non-null `initialFen`
   // here is a legal standard-rules position by the time it reaches us.
-  if (challenge.speed === "correspondence" || challenge.timeControl.type === "correspondence") {
-    return { kind: "decline", reason: "timeControl" };
-  }
+  //
+  // Correspondence games are also accepted: Lichess omits `wtime`/`btime`
+  // on correspondence streams, so `commitServerClocksEarly`'s own guard
+  // leaves `serverClocks` null, and `buildBotGoOptions` already falls
+  // back to plain `movetimeMs` in that case -- the engine thinks for
+  // its configured movetime per move regardless of how many days
+  // Lichess gives it. A human playing correspondence just moves whenever.
   if (challenge.rated && !ctx.acceptRated) {
     return { kind: "decline", reason: "rated" };
   }

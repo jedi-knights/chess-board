@@ -339,7 +339,7 @@ describe("account event stream routes challenges through decideChallenge", () =>
     expect(useLichessBotStore.getState().pendingStartFen).toBe(custom);
   });
 
-  it("declines a correspondence challenge with reason 'timeControl'", async () => {
+  it("accepts a correspondence challenge: engine falls back to plain movetime since Lichess omits wtime/btime on these streams", async () => {
     await startBotListening();
     mockedInvoke.mockClear();
 
@@ -351,10 +351,9 @@ describe("account event stream routes challenges through decideChallenge", () =>
     );
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_accept", {
       slot: "bot",
       challengeId: "abcd1234",
-      reason: "timeControl",
     });
   });
 
