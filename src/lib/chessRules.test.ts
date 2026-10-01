@@ -89,6 +89,33 @@ describe("fenAtPly", () => {
   });
 });
 
+describe("gameStatus 3check", () => {
+  it("returns `variantEnd` when a side has been checked 3 times", () => {
+    // King of white delivered 3 checks (black has been checked 3 times);
+    // Lichess FEN tail "+3+0" means remaining-white=3 (0 delivered to white),
+    // remaining-black=0 (3 delivered to black -> black lost).
+    const fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1 +3+0";
+    const status = gameStatus(fen, "3check");
+    expect(status.over).toBe(true);
+    if (status.over) expect(status.reason).toBe("variantEnd");
+  });
+
+  it("returns ongoing when neither side has 3 checks delivered", () => {
+    const fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1 +2+1";
+    // Standard-chess (variant='chess') would terminate here (insufficient
+    // material), so test variant-aware behavior with a position that
+    // isn't itself over by standard rules.
+    const nonTerminal = "4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1 +2+1";
+    const status = gameStatus(nonTerminal, "3check");
+    expect(status.over).toBe(false);
+    // Original FEN with insufficient material: standard-chess terminal
+    // overrides variant check -- we're testing that gameStatus returns
+    // ANY over:true, not specifically that it's a 3check end.
+    const standardTerminal = gameStatus(fen, "3check");
+    expect(standardTerminal.over).toBe(true);
+  });
+});
+
 describe("gameStatus KotH", () => {
   // Pawns prevent the standard "insufficient material" draw so the
   // only difference between chess and koth terminal detection here is

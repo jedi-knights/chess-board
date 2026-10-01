@@ -362,11 +362,16 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
             // flip terminal/eval behavior. UCI_Chess960 and UCI_Variant
             // are orthogonal -- Chess960 is a FEN-level variant, the
             // others are rule-level.
-            const kothOrStandard = useGameStore.getState().rules;
-            if (kothOrStandard === "koth") {
+            const activeRules = useGameStore.getState().rules;
+            if (activeRules === "koth") {
               void invoke("engine_write_line", {
                 side,
                 line: buildSetOptionCommand("UCI_Variant", "kingofthehill"),
+              });
+            } else if (activeRules === "3check") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Variant", "threeCheck"),
               });
             }
             set({ status: "ready" });

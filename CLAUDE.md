@@ -226,6 +226,14 @@ this file and the human-facing docs.
   (bot) / stop-game (human). Not re-architected here -- noted so future "why
   can't I switch modes" shows up as a user-ergonomics follow-up rather than a
   correctness bug.
+- **Three-check is accepted.** `Rules` union gains `"3check"`;
+  `rulesFromLichessVariant` maps `"threeCheck"` -> `"3check"`.
+  `engineStore.startEngine` sends `setoption name UCI_Variant value
+  threeCheck`. `chessRules.ts` adds `"3check"` to the `Variant` union
+  and routes to chessops' `ThreeCheck` class, which handles both the
+  check-counting FEN encoding (`+<rem-w>+<rem-b>`) and the terminal
+  "3 checks delivered" state. `WinnerBanner` renders "X wins by
+  three-check" when the variantEnd reason fires in a 3check game.
 - **King of the Hill is accepted.** `Rules` union gains `"koth"`;
   `rulesFromLichessVariant` (new helper in `src/lib/lichess.ts`) maps
   `"kingOfTheHill"` -> `"koth"`, used by both Lichess stores so the mapping
