@@ -54,6 +54,10 @@ export interface EngineStoreState {
   options: UciOption[];
   /** The value last set (or the option's own default) per option name. */
   optionValues: Record<string, string>;
+  /** The engine's self-reported name from its UCI `id name` reply, e.g.
+   * "Stockfish 16.1". Null until the engine has sent `id`; cleared on
+   * stop/restart so a prior session's name can't leak into the next one. */
+  engineName: string | null;
   errorMessage: string | null;
 
   setPath: (path: string) => void;
@@ -259,6 +263,8 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
               ? state.optionValues
               : { ...state.optionValues, [message.name]: message.default },
         }));
+      } else if (message.type === "id" && message.key === "name") {
+        useEngineStore.setState({ engineName: message.value });
       }
     });
 
@@ -288,6 +294,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
         searchInfoHistory: [],
         options: [],
         optionValues: {},
+        engineName: null,
         errorMessage: null,
 
         setPath: (path) => set({ path }),
@@ -327,6 +334,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
             searchInfoHistory: [],
             options: [],
             optionValues: {},
+            engineName: null,
           });
           logDebug(`starting engine: ${path}`);
           try {
@@ -363,7 +371,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
             // dismiss a displayed crash/error -- previously it didn't, so a
             // stale "engine process exited unexpectedly" stuck around with
             // no way to clear it short of restarting the whole app.
-            set({ status: "idle", lastInfo: null, searchInfoHistory: [], errorMessage: null });
+            set({ status: "idle", lastInfo: null, searchInfoHistory: [], errorMessage: null, engineName: null });
             // loadGame([]) resets the board back to the starting position
             // (plies/ply cleared) in addition to exitPlayMode()'s own
             // effect (mode back to "replay", selection cleared) -- a

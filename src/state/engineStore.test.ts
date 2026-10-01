@@ -34,7 +34,7 @@ function emit(eventName: string, payload: unknown) {
 
 const IDLE_ENGINE_STATE: Pick<
   EngineStoreState,
-  "path" | "status" | "movetimeMs" | "lastInfo" | "searchInfoHistory" | "options" | "optionValues" | "errorMessage"
+  "path" | "status" | "movetimeMs" | "lastInfo" | "searchInfoHistory" | "options" | "optionValues" | "engineName" | "errorMessage"
 > = {
   path: null,
   status: "idle",
@@ -43,6 +43,7 @@ const IDLE_ENGINE_STATE: Pick<
   searchInfoHistory: [],
   options: [],
   optionValues: {},
+  engineName: null,
   errorMessage: null,
 };
 
@@ -253,6 +254,22 @@ describe("engine-stdout listener", () => {
     expect(state.options).toHaveLength(1);
     expect(state.options[0].name).toBe("Hash");
     expect(state.optionValues.Hash).toBe("16");
+  });
+
+  it("an `id name` line records the engine's self-reported name", async () => {
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+
+    emit("engine-stdout-w", "id name Stockfish 16.1");
+
+    expect(useWhiteEngineStore.getState().engineName).toBe("Stockfish 16.1");
+  });
+
+  it("`id author` lines are ignored (only `id name` populates engineName)", async () => {
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+
+    emit("engine-stdout-w", "id author T. Romstad, M. Costalba");
+
+    expect(useWhiteEngineStore.getState().engineName).toBeNull();
   });
 });
 

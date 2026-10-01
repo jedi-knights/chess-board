@@ -84,11 +84,35 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* positioning context for .winner-banner's absolute overlay */
+  position: relative;
 }
 
 .board-panel > :first-child {
   flex: 1;
   min-height: 0;
+}
+
+/* WinnerBanner is a position:absolute child so it floats over the board
+   without claiming its own slot in the vertical flex layout -- otherwise
+   `.board-panel > :first-child { flex: 1 }` above would hand the full
+   height to the banner instead of the BoardScene when the game ends. */
+.winner-banner {
+  position: absolute;
+  top: 0.75em;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 0.4em 1em;
+  background-color: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.95em;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .side-panel {
