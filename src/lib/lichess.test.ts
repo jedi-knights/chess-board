@@ -38,6 +38,7 @@ describe("parseLichessLine", () => {
       blackName: null,
       whiteTitle: null,
       blackTitle: null,
+      initialFen: null,
     });
   });
 
@@ -64,6 +65,7 @@ describe("parseLichessLine", () => {
       blackName: null,
       whiteTitle: null,
       blackTitle: null,
+      initialFen: null,
     });
   });
 
@@ -82,6 +84,7 @@ describe("parseLichessLine", () => {
       blackName: null,
       whiteTitle: null,
       blackTitle: null,
+      initialFen: null,
     });
   });
 
@@ -125,6 +128,32 @@ describe("parseLichessLine", () => {
     expect(parsed?.whiteTitle).toBe("BOT");
     expect(parsed?.blackName).toBe("omcrosby");
     expect(parsed?.blackTitle).toBeNull();
+  });
+
+  it("surfaces gameFull's initialFen for From Position / Chess960 and normalizes 'startpos' to null", () => {
+    const customFen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    const custom = JSON.stringify({
+      type: "gameFull",
+      id: "ab",
+      initialFen: customFen,
+      state: { type: "gameState", moves: "", status: "started" },
+    });
+    expect(parseLichessLine(custom)?.initialFen).toBe(customFen);
+
+    const startpos = JSON.stringify({
+      type: "gameFull",
+      id: "ab",
+      initialFen: "startpos",
+      state: { type: "gameState", moves: "", status: "started" },
+    });
+    expect(parseLichessLine(startpos)?.initialFen).toBeNull();
+
+    const missing = JSON.stringify({
+      type: "gameFull",
+      id: "ab",
+      state: { type: "gameState", moves: "", status: "started" },
+    });
+    expect(parseLichessLine(missing)?.initialFen).toBeNull();
   });
 
   it("returns null for missing white/black objects on gameFull", () => {
@@ -480,13 +509,16 @@ describe("decideChallenge", () => {
     ).toEqual({ kind: "decline", reason: "variant" });
   });
 
-  it("declines a custom-starting-position challenge with reason 'generic'", () => {
+  it("accepts a custom-starting-position (From Position) challenge now that startFen is plumbed", () => {
+    // Pre-PR-1 we declined these with reason 'generic'; the engine
+    // supports arbitrary `position fen` and gameStore plumbs startFen
+    // through, so a non-null initialFen is no longer a refusal signal.
     expect(
       decideChallenge(
-        baseChallenge({ initialFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1" }),
+        baseChallenge({ initialFen: "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4" }),
         CTX_DEFAULT,
       ),
-    ).toEqual({ kind: "decline", reason: "generic" });
+    ).toEqual({ kind: "accept" });
   });
 
   it("declines a correspondence challenge with reason 'timeControl'", () => {

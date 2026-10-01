@@ -328,6 +328,14 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   // existing moves, they land under the right controllers/POV.
   applyDerivedControllers(update);
   applyPlayers(update);
+  // "From Position" games arrive with a non-null `initialFen` on the
+  // gameFull line only -- set it before applying any moves so the
+  // first move validates against the custom start, not standard
+  // startpos. On gameState lines the parser returns `null` here, so
+  // calling setStartFen is a safe no-op on anything after gameFull.
+  if (update.initialFen !== null) {
+    useGameStore.getState().setStartFen(update.initialFen);
+  }
 
   const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);
   for (const uci of newMoves) {

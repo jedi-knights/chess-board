@@ -166,7 +166,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
     // been applied via a different path (Lichess echo). Applying this move
     // would rewrite the board past a finished game, and in Lichess-bot mode
     // would try to POST it to a stream that's already closed.
-    const liveFen = fenAtPly(plies, plies.length);
+    const liveFen = fenAtPly(plies, plies.length, gameState.startFen ?? undefined);
     if (
       gameState.mode !== "play" ||
       sideToMove(liveFen) !== side ||
@@ -201,7 +201,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
     if (engine.status !== "ready") return;
     if (game.mode !== "play" || game.ply !== game.plies.length) return;
 
-    const fen = fenAtPly(game.plies, game.ply);
+    const fen = fenAtPly(game.plies, game.ply, game.startFen ?? undefined);
     if (sideToMove(fen) !== side) return;
     if (game.controllers[side] !== "engine") return;
     if (gameStatus(fen).over) return;
@@ -218,7 +218,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
       if (useEngineStore.getState().status !== "ready") return;
       useEngineStore.setState({ status: "thinking", searchInfoHistory: [], lastInfo: null });
       const moves = game.plies.map((p) => p.uci);
-      const positionCmd = buildPositionCommand(moves);
+      const positionCmd = buildPositionCommand(moves, game.startFen ?? undefined);
       // Prefer the caller's builder when installed (bot mode's clock-
       // aware allocation); fall back to a plain movetime when it returns
       // null or isn't installed at all (human-vs-engine, engine-vs-engine).

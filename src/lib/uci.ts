@@ -156,11 +156,14 @@ export function parseUciLine(line: string): UciMessage {
   return { type: "unknown", raw: trimmed };
 }
 
-/** `["e2e4", "e7e5"]` -> `"position startpos moves e2e4 e7e5"` (no moves yet -> `"position startpos"`). */
-export function buildPositionCommand(moves: string[]): string {
-  return moves.length === 0
-    ? "position startpos"
-    : `position startpos moves ${moves.join(" ")}`;
+/** `["e2e4", "e7e5"]` -> `"position startpos moves e2e4 e7e5"` (no moves yet -> `"position startpos"`).
+ *
+ * When `startFen` is provided (Lichess "From Position" / Chess960 SFEN), emits
+ * `position fen <FEN> [moves ...]` instead -- UCI's own alternative to
+ * `startpos`. The engine side (`src/uci.cpp`) already handles both forms. */
+export function buildPositionCommand(moves: string[], startFen?: string): string {
+  const prefix = startFen !== undefined ? `position fen ${startFen}` : "position startpos";
+  return moves.length === 0 ? prefix : `${prefix} moves ${moves.join(" ")}`;
 }
 
 /** Every field a UCI `go` line can carry today for this app. All values in

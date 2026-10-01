@@ -46,6 +46,7 @@ function nameForSide(
 export function WinnerBanner() {
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
+  const startFen = useGameStore((s) => s.startFen);
   const controllers = useGameStore((s) => s.controllers);
   // Selected as individual primitives, not a single object-literal selector
   // -- a selector returning a fresh object every call defeats zustand's
@@ -63,7 +64,7 @@ export function WinnerBanner() {
   if (plies.length === 0) return null;
   if (ply !== plies.length) return null;
 
-  const endFen = fenAtPly(plies, plies.length);
+  const endFen = fenAtPly(plies, plies.length, startFen ?? undefined);
   const status = gameStatus(endFen);
   if (!status.over) return null;
 

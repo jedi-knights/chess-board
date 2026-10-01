@@ -20,6 +20,12 @@ export type Controllers = { w: Controller; b: Controller };
 interface GameState {
   plies: Ply[];
   ply: number;
+  /** Custom starting FEN for the current game, `null` for a standard startpos
+   * game. Set by `startNewGame`'s optional `startFen` and plumbed into every
+   * `fenAtPly` call and the engine `position` command so a Lichess
+   * "From Position" challenge, a custom-FEN local game, or (later) a
+   * Chess960 SFEN all behave identically to a startpos game. */
+  startFen: string | null;
   cameraMode: CameraMode;
   loadError: string | null;
 
@@ -49,7 +55,7 @@ interface GameState {
   setPov: (pov: "w" | "b") => void;
   setPlaybackDelayMs: (ms: number) => void;
 
-  startNewGame: (controllers: Controllers, pov?: "w" | "b") => void;
+  startNewGame: (controllers: Controllers, pov?: "w" | "b", startFen?: string | null) => void;
   /** Replaces `controllers` mid-game without touching plies/ply/mode.
    * Deliberately narrow: for the case where the caller starts the game
    * with a placeholder (e.g. `{ w: "lichess", b: "lichess" }` when it
@@ -59,6 +65,14 @@ interface GameState {
    * account). Do not use for "start a new game" -- that's what
    * `startNewGame` is for. */
   setControllers: (controllers: Controllers, pov?: "w" | "b") => void;
+  /** Replaces `startFen` mid-game without touching plies/ply/mode.
+   * Same reasoning as `setControllers`: `gameFull` arrives after
+   * `primeForNewSession` has already run `startNewGame`, and the
+   * Lichess stores need to update the custom start FEN *before*
+   * applying any moves in the same update (otherwise the first
+   * move validates against standard startpos). Passing `null` is
+   * valid -- a standard-startpos game explicitly reports it. */
+  setStartFen: (startFen: string | null) => void;
   enterPlayMode: () => void;
   exitPlayMode: () => void;
   selectSquare: (square: string) => void;
@@ -77,6 +91,7 @@ interface GameState {
 export const useGameStore = create<GameState>((set, get) => ({
   plies: [],
   ply: 0,
+  startFen: null,
   cameraMode: "3d",
   loadError: null,
 
@@ -91,6 +106,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({
       plies,
       ply: 0,
+      // A loaded PGN/UCI list starts from the standard initial position --
+      // custom-FEN loads are a separate entry point and are not supported
+      // via `loadGame` today.
+      startFen: null,
       loadError: null,
       mode: "replay",
       selectedSquare: null,
@@ -124,10 +143,16 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setPlaybackDelayMs: (playbackDelayMs) => set({ playbackDelayMs }),
 
-  startNewGame: (controllers, pov) =>
+  startNewGame: (controllers, pov, startFen) =>
     set((state) => ({
       plies: [],
       ply: 0,
+      // Every `startNewGame` call starts from standard startpos unless the
+      // caller explicitly supplies a `startFen`. Lichess "From Position"
+      // passes it; standard-mode controls (EngineControls, LichessControls
+      // for a vanilla seek) don't -- a fresh game should not inherit the
+      // previous one's custom setup.
+      startFen: startFen ?? null,
       // Deliberately stays "replay" (moves locked) here -- flipping to
       // "play" is a separate step (enterPlayMode), called only once every
       // requested engine/connection actually confirms it started. Flipping
@@ -148,6 +173,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       pov: pov ?? state.pov,
     })),
 
+  setStartFen: (startFen) => set({ startFen }),
+
   enterPlayMode: () => set({ mode: "play" }),
 
   exitPlayMode: () => set({ mode: "replay", selectedSquare: null, legalDestinationSquares: [] }),
@@ -159,7 +186,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Only a human-controlled side's own turn, on the live position, in
     // play mode.
     if (state.mode !== "play" || state.ply !== state.plies.length) return;
-    const fen = fenAtPly(state.plies, state.ply);
+    const fen = fenAtPly(state.plies, state.ply, state.startFen ?? undefined);
     const toMove = sideToMove(fen);
     if (state.controllers[toMove] !== "human") return;
 
@@ -192,7 +219,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // reject it as illegal (or worse, apply the wrong replacement). Only
     // advance the view if the user was already at the end; otherwise leave
     // them where they were reviewing.
-    const liveFen = fenAtPly(state.plies, state.plies.length);
+    const liveFen = fenAtPly(state.plies, state.plies.length, state.startFen ?? undefined);
     const ply = tryMove(liveFen, from, to, promotion);
     if (!ply) return false;
 

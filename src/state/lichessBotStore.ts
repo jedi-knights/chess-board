@@ -140,6 +140,16 @@ interface LichessBotStoreState {
   status: LichessBotStatus;
   errorMessage: string | null;
   activeGameId: string | null;
+  /** Starting FEN captured from the *most recently accepted* incoming
+   * challenge, carried across to `handleGameStart` so the fresh game
+   * starts with the right `startFen` seeded on `gameStore` *before*
+   * the engine's first `maybeRequestEngineMove` fires. Without this,
+   * a "From Position" bot game would race: the engine sees startFen
+   * = null at `enterPlayMode()` and sends a move for standard
+   * startpos, which Lichess then rejects as illegal. Cleared on game
+   * finish and on stopListening. `null` means a standard-startpos
+   * game, which is the common case. */
+  pendingStartFen: string | null;
   lastSentUci: string | null;
   /** Most recent `challengeDeclined` event on our account stream for
    * an *outgoing* challenge we sent (via "Browse online bots →
@@ -236,7 +246,12 @@ function logDebug(message: string) {
  * deliberately doesn't tear down the account event stream. */
 function failBot(message: string) {
   logDebug(`FAILED: ${message}`);
-  useLichessBotStore.setState({ status: "error", errorMessage: message, activeGameId: null });
+  useLichessBotStore.setState({
+    status: "error",
+    errorMessage: message,
+    activeGameId: null,
+    pendingStartFen: null,
+  });
   useGameStore.getState().exitPlayMode();
 }
 
@@ -286,6 +301,13 @@ async function handleChallenge(challenge: LichessChallengeEvent) {
       }`,
   );
   if (decision.kind === "accept") {
+    // Cache the accepted challenge's initialFen so handleGameStart can
+    // seed gameStore.startFen *before* the engine's first move fires --
+    // see pendingStartFen's doc comment. The bot plays one game at a
+    // time (concurrent challenges are declined by decideChallenge), so
+    // last-write-wins is unambiguous. Standard-startpos challenges
+    // leave this null, which is also the default.
+    useLichessBotStore.setState({ pendingStartFen: challenge.initialFen });
     await acceptChallenge(challenge.challengeId);
   } else if (decision.kind === "decline") {
     await declineChallenge(challenge.challengeId, decision.reason);
@@ -373,11 +395,19 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
 
   // Same ordering as EngineControls/LichessControls: reset the board
   // *before* the engine or the game stream is confirmed, so nothing stale
-  // from a previous game can land on the fresh one.
-  useGameStore.getState().startNewGame({
-    w: botColor === "w" ? "engine" : "lichess",
-    b: botColor === "w" ? "lichess" : "engine",
-  });
+  // from a previous game can land on the fresh one. `pendingStartFen`
+  // is captured in handleChallenge; passing it here means a "From
+  // Position" challenge's custom FEN is live before the engine fires
+  // its first `maybeRequestEngineMove`.
+  const pending = useLichessBotStore.getState().pendingStartFen;
+  useGameStore.getState().startNewGame(
+    {
+      w: botColor === "w" ? "engine" : "lichess",
+      b: botColor === "w" ? "lichess" : "engine",
+    },
+    undefined,
+    pending,
+  );
   try {
     const engineState = engine.getState();
     // Between-games reuse: if the same engine binary is already ready,
@@ -500,6 +530,14 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   // in bullet games would consistently over-allocate.
   const prevClocks = commitServerClocksEarly(update);
   applyBotPlayers(update);
+  // "From Position" challenges arrive with a non-null `initialFen` on
+  // the gameFull line only -- set it before applying any moves so the
+  // engine's `position fen ...` command (buildPositionCommand picks
+  // this up from gameStore.startFen) and attemptMove both agree on
+  // the custom start. Same reasoning as lichessStore's branch.
+  if (update.initialFen !== null) {
+    useGameStore.getState().setStartFen(update.initialFen);
+  }
 
   // Same movesToApply diff as lichessStore's human-play path -- it's
   // agnostic to *who* made a given move, so it also correctly no-ops on
@@ -535,6 +573,7 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
     useLichessBotStore.setState({
       status: "listening",
       activeGameId: null,
+      pendingStartFen: null,
       serverClocks: null,
       players: null,
       opponentGone: null,
@@ -688,6 +727,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       status: "idle",
       errorMessage: null,
       activeGameId: null,
+      pendingStartFen: null,
       lastSentUci: null,
       lastOutgoingChallengeDecline: null,
       declinedBots: [],
@@ -818,7 +858,13 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
 
         installBotGameStreamListenersOnce();
         installLichessEventBusOnce();
-        set({ status: "listening", errorMessage: null, activeGameId: null, lastSentUci: null });
+        set({
+          status: "listening",
+          errorMessage: null,
+          activeGameId: null,
+          pendingStartFen: null,
+          lastSentUci: null,
+        });
         logDebug("listening for challenges");
         try {
           await invoke("lichess_stream_events", { slot: BOT_SLOT });
@@ -907,6 +953,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
             status: "idle",
             errorMessage: null,
             activeGameId: null,
+            pendingStartFen: null,
             serverClocks: null,
             players: null,
             opponentGone: null,

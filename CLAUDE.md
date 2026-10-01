@@ -211,11 +211,22 @@ this file and the human-facing docs.
   opted in. The checkbox lives in `LichessBotControls`; the decision function reads
   the persisted value. Do not flip the default without a separate, deliberate
   conversation about the fair-play implication.
-- **Custom starting positions are declined for now** with reason "generic". Threading
-  a start FEN through `Ply`/`gameStore`/`fenAtPly`/`buildPositionCommand` is a
-  discrete follow-up (proposed in the PR-1 planning message and left explicitly out
-  of scope). When it lands, the decideChallenge branch relaxes; until then, refusing
-  is safer than accepting a challenge we can't actually play correctly.
+- **Custom starting positions (Lichess "From Position") are accepted.** `gameStore`
+  carries an optional `startFen: string | null`; `fenAtPly(plies, ply, startFen?)` and
+  `buildPositionCommand(moves, startFen?)` thread it through, so `attemptMove`'s FEN
+  validation and the engine's `position fen ...` command both agree on the custom
+  start. `decideChallenge` no longer refuses a non-null `initialFen`. In bot mode
+  there is a race between `enterPlayMode()` (which fires immediately after the
+  stream is spawned, before `gameFull` can land with the real `initialFen`) and
+  the engine's first `maybeRequestEngineMove`: without a seeded `startFen`, the
+  engine would send a move for standard startpos and Lichess would 400 it as
+  illegal. The fix is `lichessBotStore.pendingStartFen` — the accepted challenge's
+  `initialFen` is cached in `handleChallenge` and passed as `startFen` to
+  `startNewGame` in `handleGameStart`, so the engine's first `go` already targets
+  the right position. `applyIncomingBotMoves` (and the human-mode counterpart in
+  `lichessStore`) still calls `setStartFen(update.initialFen)` when gameFull
+  arrives, as an idempotent belt-and-braces for a reconnect scenario where the
+  pending cache is empty.
 - **Bot mode drives the engine with server clocks + lag margin; movetime is a *cap*, not
   the whole budget.** `handleGameStart` installs a `goBuilder` on the bot's side engine
   store (`engineStore.setGoBuilder`) that reads live `serverClocks` on every request and
@@ -487,10 +498,6 @@ this file and the human-facing docs.
 
 ## Non-goals (deferred, not accidental)
 
-- **Custom starting positions on Lichess bot games.** Threading a start FEN through
-  `Ply`/`gameStore.fenAtPly`, `uci.ts`'s `buildPositionCommand`, and the challenge
-  decision flow is its own scope. Until it lands, `decideChallenge` refuses a
-  challenge with a non-null `initialFen`. Not a bug -- an explicit boundary.
 - **Concurrent bot games.** The Rust-side `LichessConnection` slot is a singleton
   (one active game stream at a time), and supporting multiple would mean a
   per-game map plus a routing layer inside `pump_ndjson_stream`. `decideChallenge`

@@ -38,6 +38,55 @@ describe("startNewGame", () => {
     useGameStore.getState().startNewGame(HUMAN_WHITE, "w");
     expect(useGameStore.getState().pov).toBe("w");
   });
+
+  it("defaults startFen to null (standard startpos) when the arg is omitted", () => {
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    // Seed a custom startFen first via setStartFen so we can prove
+    // startNewGame doesn't silently preserve it.
+    useGameStore.getState().setStartFen(custom);
+    expect(useGameStore.getState().startFen).toBe(custom);
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
+    expect(useGameStore.getState().startFen).toBeNull();
+  });
+
+  it("accepts a custom start FEN and stores it on the gameStore state", () => {
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    useGameStore.getState().startNewGame(HUMAN_WHITE, "w", custom);
+    expect(useGameStore.getState().startFen).toBe(custom);
+    expect(useGameStore.getState().plies).toEqual([]);
+    expect(useGameStore.getState().ply).toBe(0);
+  });
+});
+
+describe("setStartFen", () => {
+  it("updates startFen without touching plies/ply/mode -- the narrow seam for a mid-flow custom-FEN update", () => {
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
+    useGameStore.getState().enterPlayMode();
+    const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
+    useGameStore.getState().setStartFen(custom);
+    const state = useGameStore.getState();
+    expect(state.startFen).toBe(custom);
+    expect(state.plies).toEqual([]);
+    expect(state.mode).toBe("play");
+  });
+});
+
+describe("attemptMove with a custom start FEN", () => {
+  it("validates the first move against the custom start, not standard startpos", () => {
+    // Position has White's e-pawn already on e4 (White to move).
+    // e2e4 is legal from standard startpos but *illegal* here (no pawn
+    // on e2); e4e5 is legal here but illegal from standard startpos.
+    // So the two assertions together prove the custom FEN -- not the
+    // library default -- is what attemptMove validates against.
+    useGameStore.getState().startNewGame(
+      HUMAN_WHITE,
+      "w",
+      "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1",
+    );
+    useGameStore.getState().enterPlayMode();
+    expect(useGameStore.getState().attemptMove("e2", "e4")).toBe(false);
+    expect(useGameStore.getState().attemptMove("e4", "e5")).toBe(true);
+  });
 });
 
 describe("enterPlayMode / exitPlayMode", () => {

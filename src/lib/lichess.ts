@@ -69,6 +69,13 @@ export interface LichessMoveUpdate {
    * obvious at a glance which side is an engine. */
   whiteTitle: string | null;
   blackTitle: string | null;
+  /** Starting FEN for the game -- present on the `gameFull` top level
+   * for "From Position" and Chess960 games, `"startpos"` or absent for
+   * a standard-startpos game. Only extracted from `gameFull`; subsequent
+   * `gameState` lines don't carry it (the start FEN is fixed for the
+   * game). Normalized to `null` when the field is missing, `"startpos"`,
+   * or malformed. */
+  initialFen: string | null;
 }
 
 /**
@@ -116,6 +123,7 @@ function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | nul
     blackName: null,
     whiteTitle: null,
     blackTitle: null,
+    initialFen: null,
   };
 }
 
@@ -166,6 +174,13 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
     // name from a single seam.
     const white = readPlayerInfo(obj, "white");
     const black = readPlayerInfo(obj, "black");
+    // Lichess sends `initialFen: "startpos"` for standard-startpos games
+    // and an actual FEN string for "From Position" / Chess960. Normalize
+    // the sentinel to `null` so callers can key on `initialFen !== null`.
+    const initialFenRaw = typeof obj.initialFen === "string" ? obj.initialFen : null;
+    const initialFen = initialFenRaw === "startpos" || initialFenRaw === null
+      ? null
+      : initialFenRaw;
     return {
       ...state,
       whiteId: white.id,
@@ -174,6 +189,7 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
       blackName: black.name,
       whiteTitle: white.title,
       blackTitle: black.title,
+      initialFen,
     };
   }
   if (obj.type === "gameState") {
@@ -486,14 +502,10 @@ export function decideChallenge(
   if (challenge.variant !== "standard") {
     return { kind: "decline", reason: "variant" };
   }
-  // Custom starting position -- threading a start FEN through
-  // gameStore/uci.ts is its own follow-up. Using "standard" (Lichess's
-  // "Don't play standard chess" reason) or "generic" -- either is
-  // defensible; `generic` is the honest "we don't support this yet"
-  // without misrepresenting policy.
-  if (challenge.initialFen !== null) {
-    return { kind: "decline", reason: "generic" };
-  }
+  // Custom starting positions ("From Position") are accepted now that
+  // startFen is plumbed through gameStore / uci.ts. Lichess validates
+  // the FEN before issuing the challenge, so a non-null `initialFen`
+  // here is a legal standard-rules position by the time it reaches us.
   if (challenge.speed === "correspondence" || challenge.timeControl.type === "correspondence") {
     return { kind: "decline", reason: "timeControl" };
   }

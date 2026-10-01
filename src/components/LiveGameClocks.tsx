@@ -60,6 +60,7 @@ export function LiveGameClocks() {
   const clocks = useLiveClocks();
   const players = useLivePlayers();
   const plies = useGameStore((s) => s.plies);
+  const startFen = useGameStore((s) => s.startFen);
   // Force a re-render every 100 ms so the tick advances. `now` is the
   // dependency the render body reads; storing it in state is what makes
   // React re-render.
@@ -72,7 +73,7 @@ export function LiveGameClocks() {
 
   if (!clocks) return null;
 
-  const fen = fenAtPly(plies, plies.length);
+  const fen = fenAtPly(plies, plies.length, startFen ?? undefined);
   const toMove = sideToMove(fen);
   const elapsedSinceUpdate = Math.max(0, now - clocks.updatedAtMs);
   const wDisplay = toMove === "w" ? clocks.wtimeMs - elapsedSinceUpdate : clocks.wtimeMs;
