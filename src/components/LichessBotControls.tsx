@@ -33,6 +33,7 @@ export function LichessBotControls() {
   const clearToken = useLichessBotStore((s) => s.clearToken);
   const verifyAccount = useLichessBotStore((s) => s.verifyAccount);
   const oauthLogin = useLichessBotStore((s) => s.oauthLogin);
+  const cancelOauthLogin = useLichessBotStore((s) => s.cancelOauthLogin);
   const [oauthInFlight, setOauthInFlight] = useState(false);
 
   const enginePath = useLichessBotStore((s) => s.enginePath);
@@ -144,9 +145,17 @@ export function LichessBotControls() {
       </p>
       {!hasToken ? (
         <>
-          <button onClick={signIn} disabled={oauthInFlight}>
-            {oauthInFlight ? "Waiting for browser…" : "Sign in with Lichess (BOT account)"}
-          </button>
+          {oauthInFlight ? (
+            <>
+              <p className="hint">
+                Waiting for browser… approve the request on Lichess as your BOT
+                account, or click Cancel to retry.
+              </p>
+              <button onClick={() => void cancelOauthLogin()}>Cancel sign-in</button>
+            </>
+          ) : (
+            <button onClick={signIn}>Sign in with Lichess (BOT account)</button>
+          )}
           <p className="hint">
             Opens a browser tab to Lichess so you can approve the bot:play and
             challenge:write scopes. Or paste a token directly below — either way, it's

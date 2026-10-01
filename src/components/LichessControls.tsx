@@ -34,6 +34,7 @@ export function LichessControls() {
   const clearToken = useLichessStore((s) => s.clearToken);
   const verifyAccount = useLichessStore((s) => s.verifyAccount);
   const oauthLogin = useLichessStore((s) => s.oauthLogin);
+  const cancelOauthLogin = useLichessStore((s) => s.cancelOauthLogin);
   const [oauthInFlight, setOauthInFlight] = useState(false);
   const seek = useLichessStore((s) => s.seek);
   const stopSeek = useLichessStore((s) => s.stopSeek);
@@ -78,9 +79,17 @@ export function LichessControls() {
       <h2>Play on Lichess</h2>
       {!hasToken ? (
         <>
-          <button onClick={signIn} disabled={oauthInFlight}>
-            {oauthInFlight ? "Waiting for browser…" : "Sign in with Lichess"}
-          </button>
+          {oauthInFlight ? (
+            <>
+              <p className="hint">
+                Waiting for browser… approve the request on Lichess, or click Cancel
+                to retry.
+              </p>
+              <button onClick={() => void cancelOauthLogin()}>Cancel sign-in</button>
+            </>
+          ) : (
+            <button onClick={signIn}>Sign in with Lichess</button>
+          )}
           <p className="hint">
             Or paste a personal access token (board:play scope). The token is stored in
             your OS keychain and never leaves this app; sign-in opens a browser tab and

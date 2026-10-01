@@ -125,6 +125,10 @@ interface LichessStoreState {
    * and populates `verifiedAccount`. Alternative to `setToken` for
    * users who don't want to paste a PAT. */
   oauthLogin: () => Promise<void>;
+  /** Abandon an in-flight `oauthLogin`. Useful when the user closed
+   * the browser tab or signed in as the wrong account and wants to
+   * retry without waiting out the 5-minute Rust-side timeout. */
+  cancelOauthLogin: () => Promise<void>;
   /** Board API seek. Opens the account event stream (so `gameStart` can
    * auto-connect the game stream on match) then POSTs the seek. The
    * seek request stays open on the server until matched or aborted. */
@@ -517,8 +521,28 @@ export const useLichessStore = create<LichessStoreState>((set) => ({
       });
       logDebug(`oauth login succeeded as ${info.username}`);
     } catch (err) {
-      set({ verifyError: String(err) });
-      logDebug(`oauth login failed: ${String(err)}`);
+      // Distinguish the user-driven cancel from a real failure -- the
+      // UI shouldn't show "OAuth sign-in canceled" as a red error line
+      // when the user themselves clicked Cancel.
+      const message = String(err);
+      if (message.includes("canceled")) {
+        set({ verifyError: null });
+        logDebug("oauth login canceled by user");
+      } else {
+        set({ verifyError: message });
+        logDebug(`oauth login failed: ${message}`);
+      }
+    }
+  },
+
+  cancelOauthLogin: async () => {
+    logDebug("oauth cancel requested");
+    try {
+      await invoke("lichess_oauth_cancel");
+    } catch (err) {
+      // Cancel is best-effort; a failing cancel is still useful info
+      // to log, but shouldn't become its own user-visible error.
+      logDebug(`oauth cancel failed: ${String(err)}`);
     }
   },
 

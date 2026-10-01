@@ -16,6 +16,7 @@ pub fn run() {
         .manage(lichess::LichessEventConnection(lichess::new_shared_lichess_state()))
         .manage(lichess::LichessSeekConnection(lichess::new_shared_lichess_state()))
         .manage(lichess::new_shared_account_cache())
+        .manage(lichess::new_shared_oauth_cancel())
         .setup(|app| {
             // A fresh debug.log per session, per the mandate that it must
             // never grow unbounded across a long-running dev session.
@@ -55,6 +56,7 @@ pub fn run() {
             lichess::lichess_token_clear,
             lichess::lichess_verify_account,
             lichess::lichess_oauth_login,
+            lichess::lichess_oauth_cancel,
             lichess::lichess_stream_game,
             lichess::lichess_stop_game,
             lichess::lichess_make_move,
