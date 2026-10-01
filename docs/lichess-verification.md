@@ -117,8 +117,8 @@ detection + exponential-backoff reconnect).
 
 **Setup:**
 
-1. Start a game — human vs. AI is fastest (**View → Game Mode →
-   Play on Lichess → Play the Lichess AI, level 1, 10+0**). AI moves
+1. Start a game — human vs. AI is fastest (**View → Game Mode → Human
+   vs Lichess**, then **Play the Lichess AI, level 1, 10+0**). AI moves
    instantly so the stream sees regular traffic.
 2. Play a few moves.
 
@@ -268,7 +268,8 @@ verifier + challenge + state, token exchange).
 **Setup:**
 
 1. Clear the human-slot token if one is set (Clear token button).
-2. In **Play on Lichess** mode, click **Sign in with Lichess**.
+2. In **Human vs Lichess** mode (the sidebar panel is titled "Play on
+   Lichess"), click **Sign in with Lichess**.
 
 **Expected:**
 
