@@ -249,8 +249,15 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <BoardSquares palette={palette} />
       <MoveHighlights fen={fen} />
       {pieces.map((piece) => (
+        // Key includes type+color so a square whose contents change
+        // identity (capture, promotion, or a big ply jump landing on a
+        // different piece than was at that square before) forces a fresh
+        // Piece mount rather than reusing a stale instance -- Piece.tsx's
+        // useLayoutEffect runs at mount only, so a reused instance would
+        // keep its old animation-driven position even though its props
+        // now describe a different piece.
         <Piece
-          key={piece.square}
+          key={`${piece.square}-${piece.type}-${piece.color}`}
           type={piece.type}
           color={piece.color}
           position={squareToPosition(piece.square)}
