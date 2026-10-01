@@ -16,7 +16,7 @@ export type GameMode = "replay" | "play";
  * the engine's `UCI_Chess960` option toggled so bestmove output uses
  * the king-captures-own-rook UCI form. Other Lichess variants
  * (Antichess, Atomic, ...) will extend this union as each lands. */
-export type Rules = "chess" | "chess960" | "koth" | "3check" | "horde" | "racingkings" | "atomic" | "antichess";
+export type Rules = "chess" | "chess960" | "koth" | "3check" | "horde" | "racingkings" | "atomic" | "antichess" | "crazyhouse";
 
 /** What drives a given side's moves. "lichess" means moves arrive from (and
  * are sent to) a live Lichess game stream -- see lichessStore.ts /
