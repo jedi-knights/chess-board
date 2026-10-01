@@ -47,14 +47,16 @@ export function WinnerBanner() {
   const plies = useGameStore((s) => s.plies);
   const ply = useGameStore((s) => s.ply);
   const controllers = useGameStore((s) => s.controllers);
-  const whiteEngine = useWhiteEngineStore((s) => ({
-    engineName: s.engineName,
-    path: s.path,
-  }));
-  const blackEngine = useBlackEngineStore((s) => ({
-    engineName: s.engineName,
-    path: s.path,
-  }));
+  // Selected as individual primitives, not a single object-literal selector
+  // -- a selector returning a fresh object every call defeats zustand's
+  // snapshot equality check and causes an infinite re-render loop (seen
+  // live: "Maximum update depth exceeded" on every mount).
+  const whiteEngineName = useWhiteEngineStore((s) => s.engineName);
+  const whiteEnginePath = useWhiteEngineStore((s) => s.path);
+  const blackEngineName = useBlackEngineStore((s) => s.engineName);
+  const blackEnginePath = useBlackEngineStore((s) => s.path);
+  const whiteEngine = { engineName: whiteEngineName, path: whiteEnginePath };
+  const blackEngine = { engineName: blackEngineName, path: blackEnginePath };
   const lichessPlayers = useLichessStore((s) => s.players);
   const botPlayers = useLichessBotStore((s) => s.players);
 
