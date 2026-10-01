@@ -62,6 +62,17 @@ body {
   font-size: 1.2em;
 }
 
+.app-header .session-control {
+  padding: 0.35em 1em;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+.app-header .session-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .app-body {
   flex: 1;
   display: flex;
