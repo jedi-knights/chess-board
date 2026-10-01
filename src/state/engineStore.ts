@@ -344,6 +344,18 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
             // already works without waiting on uciok, so this doesn't
             // change the ready/turn-orchestration timing at all.
             void invoke("engine_write_line", { side, line: "uci" });
+            // When the active game is Chess960, flip the engine's output
+            // format now (ships before the first `position`/`go` so the
+            // engine's search internally uses UCI_Chess960 encoding for
+            // its bestmove reply). Lichess's Bot API sends the king-
+            // captures-rook UCI form; without this the engine's
+            // bestmove ships "e1g1" and Lichess 400s the move.
+            if (useGameStore.getState().rules === "chess960") {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand("UCI_Chess960", "true"),
+              });
+            }
             set({ status: "ready" });
             logDebug("engine ready");
             // Deliberately does NOT call enterPlayMode()/checkTurn() here --

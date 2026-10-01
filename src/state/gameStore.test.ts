@@ -58,6 +58,29 @@ describe("startNewGame", () => {
   });
 });
 
+describe("rules / setRules", () => {
+  it("defaults rules to 'chess' on a fresh startNewGame", () => {
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
+    expect(useGameStore.getState().rules).toBe("chess");
+  });
+
+  it("accepts a rules override on startNewGame and resets to 'chess' on the next startNewGame without an override", () => {
+    useGameStore.getState().startNewGame(HUMAN_WHITE, undefined, undefined, "chess960");
+    expect(useGameStore.getState().rules).toBe("chess960");
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
+    expect(useGameStore.getState().rules).toBe("chess");
+  });
+
+  it("setRules updates the rule set without touching plies/mode -- the narrow seam for gameFull-arrival updates", () => {
+    useGameStore.getState().startNewGame(HUMAN_WHITE);
+    useGameStore.getState().enterPlayMode();
+    useGameStore.getState().setRules("chess960");
+    expect(useGameStore.getState().rules).toBe("chess960");
+    expect(useGameStore.getState().mode).toBe("play");
+    expect(useGameStore.getState().plies).toEqual([]);
+  });
+});
+
 describe("setStartFen", () => {
   it("updates startFen without touching plies/ply/mode -- the narrow seam for a mid-flow custom-FEN update", () => {
     useGameStore.getState().startNewGame(HUMAN_WHITE);

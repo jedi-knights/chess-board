@@ -226,6 +226,22 @@ this file and the human-facing docs.
   (bot) / stop-game (human). Not re-architected here -- noted so future "why
   can't I switch modes" shows up as a user-ergonomics follow-up rather than a
   correctness bug.
+- **Chess960 (Fischer Random) is accepted.** `gameStore.rules: Rules` carries
+  `"chess" | "chess960"`; set by `startNewGame`'s optional 4th arg or by the
+  narrow `setRules` setter. `engineStore.startEngine` sends `setoption name
+  UCI_Chess960 value true` immediately after the `uci` handshake when
+  `rules === "chess960"`, so the engine's bestmove ships in the king-
+  captures-rook UCI form Lichess's Bot API expects (`e1h1` style). The
+  chessops library inside `chessRules.ts` handles Chess960 castling natively
+  via Shredder-FEN / X-FEN; the Shredder-encoded start FEN arrives from
+  Lichess as `initialFen` on `gameFull` and goes through the same `setStartFen`
+  seam added for From Position. In bot mode, `pendingRules` is cached in
+  `handleChallenge` alongside `pendingStartFen` so `handleGameStart` seeds
+  gameStore with the right variant *before* the engine's first
+  `maybeRequestEngineMove` fires -- same race / fix pattern as pendingStartFen.
+  Other Lichess variants (Antichess, Atomic, Three-check, KotH, Horde, Racing
+  Kings, Crazyhouse) still fail `decideChallenge` with reason `"variant"`
+  until each one lands as its own engine-side PR.
 - **Custom starting positions (Lichess "From Position") are accepted.** `gameStore`
   carries an optional `startFen: string | null`; `fenAtPly(plies, ply, startFen?)` and
   `buildPositionCommand(moves, startFen?)` thread it through, so `attemptMove`'s FEN

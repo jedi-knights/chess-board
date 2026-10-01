@@ -17,7 +17,7 @@ import {
 import { installLichessEventBusOnce } from "../lib/lichessEventBus";
 import type { GoOptions } from "../lib/uci";
 import { ENGINE_NOT_RUNNING, engineStoreForSide } from "./engineStore";
-import { useGameStore } from "./gameStore";
+import { useGameStore, type Rules } from "./gameStore";
 import {
   movesToApply,
   pendingMoveToSend,
@@ -150,6 +150,12 @@ interface LichessBotStoreState {
    * finish and on stopListening. `null` means a standard-startpos
    * game, which is the common case. */
   pendingStartFen: string | null;
+  /** Variant of the most recently accepted challenge, carried across to
+   * `handleGameStart` so the fresh game starts with the right
+   * `gameStore.rules` seeded. Standard/null → "chess"; "chess960" →
+   * "chess960". Cleared on game finish / stopListening alongside
+   * pendingStartFen. */
+  pendingRules: Rules;
   lastSentUci: string | null;
   /** Most recent `challengeDeclined` event on our account stream for
    * an *outgoing* challenge we sent (via "Browse online bots →
@@ -251,6 +257,7 @@ function failBot(message: string) {
     errorMessage: message,
     activeGameId: null,
     pendingStartFen: null,
+    pendingRules: "chess",
   });
   useGameStore.getState().exitPlayMode();
 }
@@ -307,7 +314,10 @@ async function handleChallenge(challenge: LichessChallengeEvent) {
     // time (concurrent challenges are declined by decideChallenge), so
     // last-write-wins is unambiguous. Standard-startpos challenges
     // leave this null, which is also the default.
-    useLichessBotStore.setState({ pendingStartFen: challenge.initialFen });
+    useLichessBotStore.setState({
+      pendingStartFen: challenge.initialFen,
+      pendingRules: challenge.variant === "chess960" ? "chess960" : "chess",
+    });
     await acceptChallenge(challenge.challengeId);
   } else if (decision.kind === "decline") {
     await declineChallenge(challenge.challengeId, decision.reason);
@@ -396,10 +406,11 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
   // Same ordering as EngineControls/LichessControls: reset the board
   // *before* the engine or the game stream is confirmed, so nothing stale
   // from a previous game can land on the fresh one. `pendingStartFen`
-  // is captured in handleChallenge; passing it here means a "From
-  // Position" challenge's custom FEN is live before the engine fires
-  // its first `maybeRequestEngineMove`.
+  // and `pendingRules` are captured in handleChallenge; passing them
+  // here means a Chess960 or From Position challenge's custom state is
+  // live before the engine fires its first `maybeRequestEngineMove`.
   const pending = useLichessBotStore.getState().pendingStartFen;
+  const pendingRules = useLichessBotStore.getState().pendingRules;
   useGameStore.getState().startNewGame(
     {
       w: botColor === "w" ? "engine" : "lichess",
@@ -407,6 +418,7 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
     },
     undefined,
     pending,
+    pendingRules,
   );
   try {
     const engineState = engine.getState();
@@ -538,6 +550,9 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   if (update.initialFen !== null) {
     useGameStore.getState().setStartFen(update.initialFen);
   }
+  if (update.variant !== null) {
+    useGameStore.getState().setRules(update.variant === "chess960" ? "chess960" : "chess");
+  }
 
   // Same movesToApply diff as lichessStore's human-play path -- it's
   // agnostic to *who* made a given move, so it also correctly no-ops on
@@ -574,6 +589,7 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
       status: "listening",
       activeGameId: null,
       pendingStartFen: null,
+      pendingRules: "chess",
       serverClocks: null,
       players: null,
       opponentGone: null,
@@ -728,6 +744,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       errorMessage: null,
       activeGameId: null,
       pendingStartFen: null,
+      pendingRules: "chess",
       lastSentUci: null,
       lastOutgoingChallengeDecline: null,
       declinedBots: [],
@@ -863,6 +880,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
           errorMessage: null,
           activeGameId: null,
           pendingStartFen: null,
+          pendingRules: "chess",
           lastSentUci: null,
         });
         logDebug("listening for challenges");
@@ -954,6 +972,7 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
             errorMessage: null,
             activeGameId: null,
             pendingStartFen: null,
+            pendingRules: "chess",
             serverClocks: null,
             players: null,
             opponentGone: null,

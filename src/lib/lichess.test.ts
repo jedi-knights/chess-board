@@ -39,6 +39,7 @@ describe("parseLichessLine", () => {
       whiteTitle: null,
       blackTitle: null,
       initialFen: null,
+      variant: null,
     });
   });
 
@@ -66,6 +67,7 @@ describe("parseLichessLine", () => {
       whiteTitle: null,
       blackTitle: null,
       initialFen: null,
+      variant: null,
     });
   });
 
@@ -85,6 +87,7 @@ describe("parseLichessLine", () => {
       whiteTitle: null,
       blackTitle: null,
       initialFen: null,
+      variant: null,
     });
   });
 
@@ -128,6 +131,28 @@ describe("parseLichessLine", () => {
     expect(parsed?.whiteTitle).toBe("BOT");
     expect(parsed?.blackName).toBe("omcrosby");
     expect(parsed?.blackTitle).toBeNull();
+  });
+
+  it("surfaces gameFull's variant key for Chess960 and leaves it null for standard", () => {
+    const chess960 = JSON.stringify({
+      type: "gameFull",
+      id: "ab",
+      variant: { key: "chess960", name: "Chess960" },
+      state: { type: "gameState", moves: "", status: "started" },
+    });
+    expect(parseLichessLine(chess960)?.variant).toBe("chess960");
+
+    const standard = JSON.stringify({
+      type: "gameFull",
+      id: "ab",
+      variant: { key: "standard", name: "Standard" },
+      state: { type: "gameState", moves: "", status: "started" },
+    });
+    expect(parseLichessLine(standard)?.variant).toBe("standard");
+
+    // gameState lines don't carry variant.
+    const gs = JSON.stringify({ type: "gameState", moves: "", status: "started" });
+    expect(parseLichessLine(gs)?.variant).toBeNull();
   });
 
   it("surfaces gameFull's initialFen for From Position / Chess960 and normalizes 'startpos' to null", () => {
@@ -503,9 +528,18 @@ describe("decideChallenge", () => {
     });
   });
 
-  it("declines a variant challenge with reason 'variant'", () => {
+  it("accepts a chess960 challenge now that the engine's UCI_Chess960 output path is wired", () => {
     expect(
       decideChallenge(baseChallenge({ variant: "chess960" }), CTX_DEFAULT),
+    ).toEqual({ kind: "accept" });
+  });
+
+  it("still declines other variants (atomic, antichess, etc.) with reason 'variant'", () => {
+    expect(
+      decideChallenge(baseChallenge({ variant: "atomic" }), CTX_DEFAULT),
+    ).toEqual({ kind: "decline", reason: "variant" });
+    expect(
+      decideChallenge(baseChallenge({ variant: "kingOfTheHill" }), CTX_DEFAULT),
     ).toEqual({ kind: "decline", reason: "variant" });
   });
 

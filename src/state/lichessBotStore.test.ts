@@ -264,11 +264,25 @@ describe("account event stream routes challenges through decideChallenge", () =>
     expect(mockedInvoke).not.toHaveBeenCalledWith("lichess_challenge_decline", expect.anything());
   });
 
-  it("declines a variant challenge with reason 'variant'", async () => {
+  it("accepts a chess960 challenge and caches variant for handleGameStart", async () => {
     await startBotListening();
     mockedInvoke.mockClear();
 
     emitAccountEvent(fullChallenge({ variant: { key: "chess960" } }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_accept", {
+      slot: "bot",
+      challengeId: "abcd1234",
+    });
+    expect(useLichessBotStore.getState().pendingRules).toBe("chess960");
+  });
+
+  it("declines other variants (atomic, antichess, ...) with reason 'variant'", async () => {
+    await startBotListening();
+    mockedInvoke.mockClear();
+
+    emitAccountEvent(fullChallenge({ variant: { key: "atomic" } }));
     await new Promise((r) => setTimeout(r, 0));
 
     expect(mockedInvoke).toHaveBeenCalledWith("lichess_challenge_decline", {

@@ -336,6 +336,14 @@ function applyIncomingMoves(update: ReturnType<typeof parseLichessLine>) {
   if (update.initialFen !== null) {
     useGameStore.getState().setStartFen(update.initialFen);
   }
+  // Variant arrives only on gameFull. Chess960 is the only accepted
+  // non-standard today (see decideChallenge); other variants would
+  // never reach this branch. Set rules before applying moves so a
+  // multi-move catch-up (reconnect to a game in progress) validates
+  // under the right rule set.
+  if (update.variant !== null) {
+    useGameStore.getState().setRules(update.variant === "chess960" ? "chess960" : "chess");
+  }
 
   const newMoves = movesToApply(update.moves, useGameStore.getState().plies.length);
   for (const uci of newMoves) {
