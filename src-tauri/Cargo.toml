@@ -44,7 +44,24 @@ tokio = { version = "1", features = ["rt", "time", "sync", "net", "io-util"] }
 # Linux Secret Service) for the Lichess personal access token -- deliberately
 # not persisted via zustand's localStorage-backed store, since it's a bearer
 # credential, not a UI preference. See owasp-top-10.md A04.
-keyring = "3"
+#
+# IMPORTANT: `keyring = "3"` has *no default features*. Without an
+# opt-in backend, every `Entry::new()` constructs a fresh in-memory
+# mock credential store that resets between calls -- `set_password`
+# returns `Ok` but the subsequent `get_password` always returns
+# `NoEntry`. Observed in dev as "Save bot token succeeds, Start
+# listening errors with 'no Lichess bot token is set'". The features
+# below enable the real OS keychains on each supported platform.
+# `crypto-rust` is the pure-Rust crypto backend the Linux secret-
+# service transport needs (no system OpenSSL/dbus-glib dependency),
+# consistent with this crate's existing rustls-tls-not-openssl choice
+# for reqwest.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "linux-native-sync-persistent",
+    "crypto-rust",
+] }
 # PKCE primitives for the OAuth2 flow. Small, single-purpose deps: sha2
 # for the code_challenge digest, base64 for URL-safe encoding, getrandom
 # for the code_verifier + CSRF state (OS randomness, not the heavier
