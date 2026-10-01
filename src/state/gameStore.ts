@@ -11,6 +11,13 @@ import {
 export type CameraMode = "2d" | "3d";
 export type GameMode = "replay" | "play";
 
+/** Game variant / rule set. Standard chess is the default; Chess960
+ * shares movegen rules with chessops' standard Chess class but needs
+ * the engine's `UCI_Chess960` option toggled so bestmove output uses
+ * the king-captures-own-rook UCI form. Other Lichess variants
+ * (Antichess, Atomic, ...) will extend this union as each lands. */
+export type Rules = "chess" | "chess960";
+
 /** What drives a given side's moves. "lichess" means moves arrive from (and
  * are sent to) a live Lichess game stream -- see lichessStore.ts /
  * lichessBotStore.ts. */
@@ -26,6 +33,11 @@ interface GameState {
    * "From Position" challenge, a custom-FEN local game, or (later) a
    * Chess960 SFEN all behave identically to a startpos game. */
   startFen: string | null;
+  /** Variant / rule set for the active game. `"chess"` for standard
+   * (startpos or From Position), `"chess960"` for Fischer Random. The
+   * engineStore reads this to decide whether to send `setoption name
+   * UCI_Chess960 value true` after `startEngine`. */
+  rules: Rules;
   cameraMode: CameraMode;
   loadError: string | null;
 
@@ -55,7 +67,12 @@ interface GameState {
   setPov: (pov: "w" | "b") => void;
   setPlaybackDelayMs: (ms: number) => void;
 
-  startNewGame: (controllers: Controllers, pov?: "w" | "b", startFen?: string | null) => void;
+  startNewGame: (
+    controllers: Controllers,
+    pov?: "w" | "b",
+    startFen?: string | null,
+    rules?: Rules,
+  ) => void;
   /** Replaces `controllers` mid-game without touching plies/ply/mode.
    * Deliberately narrow: for the case where the caller starts the game
    * with a placeholder (e.g. `{ w: "lichess", b: "lichess" }` when it
@@ -73,6 +90,12 @@ interface GameState {
    * move validates against standard startpos). Passing `null` is
    * valid -- a standard-startpos game explicitly reports it. */
   setStartFen: (startFen: string | null) => void;
+  /** Narrow setter for the variant, same reasoning as `setStartFen`:
+   * when `handleGameStart` has already created the game placeholder
+   * via `startNewGame` and `gameFull` later arrives carrying the real
+   * variant, this is how the variant is updated without resetting
+   * `plies`. */
+  setRules: (rules: Rules) => void;
   enterPlayMode: () => void;
   exitPlayMode: () => void;
   selectSquare: (square: string) => void;
@@ -92,6 +115,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   plies: [],
   ply: 0,
   startFen: null,
+  rules: "chess",
   cameraMode: "3d",
   loadError: null,
 
@@ -110,6 +134,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // custom-FEN loads are a separate entry point and are not supported
       // via `loadGame` today.
       startFen: null,
+      rules: "chess",
       loadError: null,
       mode: "replay",
       selectedSquare: null,
@@ -143,7 +168,7 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   setPlaybackDelayMs: (playbackDelayMs) => set({ playbackDelayMs }),
 
-  startNewGame: (controllers, pov, startFen) =>
+  startNewGame: (controllers, pov, startFen, rules) =>
     set((state) => ({
       plies: [],
       ply: 0,
@@ -153,6 +178,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // for a vanilla seek) don't -- a fresh game should not inherit the
       // previous one's custom setup.
       startFen: startFen ?? null,
+      rules: rules ?? "chess",
       // Deliberately stays "replay" (moves locked) here -- flipping to
       // "play" is a separate step (enterPlayMode), called only once every
       // requested engine/connection actually confirms it started. Flipping
@@ -174,6 +200,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     })),
 
   setStartFen: (startFen) => set({ startFen }),
+
+  setRules: (rules) => set({ rules }),
 
   enterPlayMode: () => set({ mode: "play" }),
 

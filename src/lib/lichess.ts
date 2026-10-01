@@ -76,6 +76,12 @@ export interface LichessMoveUpdate {
    * game). Normalized to `null` when the field is missing, `"startpos"`,
    * or malformed. */
   initialFen: string | null;
+  /** Lichess variant key (`"standard"`, `"chess960"`, ...). Only present
+   * on the `gameFull` top level; `null` on `gameState` lines and on
+   * anything malformed. The chess-board side only acts on this when it
+   * differs from "standard" -- Chess960 toggles the engine's
+   * UCI_Chess960 option on game start. */
+  variant: string | null;
 }
 
 /**
@@ -124,6 +130,7 @@ function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | nul
     whiteTitle: null,
     blackTitle: null,
     initialFen: null,
+    variant: null,
   };
 }
 
@@ -181,6 +188,18 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
     const initialFen = initialFenRaw === "startpos" || initialFenRaw === null
       ? null
       : initialFenRaw;
+    // Lichess's gameFull `variant` is an object `{ key, name }` on the
+    // Board API; the challenge event's `variant` is the same shape (see
+    // parseChallenge). Read `.key` defensively since older Bot API
+    // payloads have been seen with a bare string.
+    const variantRaw = obj.variant;
+    let variant: string | null = null;
+    if (typeof variantRaw === "object" && variantRaw !== null) {
+      const v = (variantRaw as Record<string, unknown>).key;
+      if (typeof v === "string") variant = v;
+    } else if (typeof variantRaw === "string") {
+      variant = variantRaw;
+    }
     return {
       ...state,
       whiteId: white.id,
@@ -190,6 +209,7 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
       whiteTitle: white.title,
       blackTitle: black.title,
       initialFen,
+      variant,
     };
   }
   if (obj.type === "gameState") {
@@ -499,7 +519,11 @@ export function decideChallenge(
   if (ctx.activeGameId) {
     return { kind: "decline", reason: "later" };
   }
-  if (challenge.variant !== "standard") {
+  // Chess960 is accepted: chessops handles its castling rules natively,
+  // and the engine ships `setoption name UCI_Chess960 value true` when
+  // the game starts. Other Lichess variants still fail here until each
+  // one lands as its own PR with engine-side movegen support.
+  if (challenge.variant !== "standard" && challenge.variant !== "chess960") {
     return { kind: "decline", reason: "variant" };
   }
   // Custom starting positions ("From Position") are accepted now that

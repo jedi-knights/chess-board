@@ -335,6 +335,29 @@ describe("checkTurn / maybeRequestEngineMove", () => {
     expect(useBlackEngineStore.getState().status).toBe("ready");
   });
 
+  it("sends `setoption name UCI_Chess960 value true` after the uci handshake when rules==='chess960'", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" }, "w", null, "chess960");
+    mockedInvoke.mockClear();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+
+    // The order engineStore writes is: engine_start -> `uci` -> UCI_Chess960.
+    expect(mockedInvoke).toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "setoption name UCI_Chess960 value true",
+    });
+  });
+
+  it("does NOT send UCI_Chess960 for a standard-chess game", async () => {
+    useGameStore.getState().startNewGame({ w: "engine", b: "human" });
+    mockedInvoke.mockClear();
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+
+    expect(mockedInvoke).not.toHaveBeenCalledWith("engine_write_line", {
+      side: "w",
+      line: "setoption name UCI_Chess960 value true",
+    });
+  });
+
   it("emits `position fen <FEN>` when the game started from a custom position", async () => {
     const custom = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4";
     useGameStore.getState().startNewGame({ w: "engine", b: "human" }, "w", custom);
