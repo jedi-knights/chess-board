@@ -5,6 +5,11 @@ import { OrthographicCamera } from "three";
 import { fenToPieces } from "../lib/chessRules";
 import { squareName, squareToPosition } from "../lib/boardGeometry";
 import { getBoardPalette, type BoardPalette } from "../lib/boardPalettes";
+import {
+  BORDER_WIDTH,
+  createFileStripTexture,
+  createRankStripTexture,
+} from "../lib/boardCoordinates";
 import { createWoodTexture } from "../lib/woodTexture";
 import { Piece } from "./Piece";
 import { MoveHighlights } from "./MoveHighlights";
@@ -57,10 +62,82 @@ function BoardSquares({ palette }: { palette: BoardPalette }) {
 }
 
 // The board's outer edge sits at world ±4 (see boardGeometry.ts's ±3.5
-// square centers plus half a square) -- 8 world units per side. A little
-// over that as the target fit size leaves a small margin instead of
-// clipping the outermost squares against the canvas edge.
-const BOARD_VIEW_UNITS = 8.4;
+// square centers plus half a square) -- 8 world units per side. The
+// labeled border adds BORDER_WIDTH on each side; a small extra margin
+// keeps the outermost labels from pressing against the canvas edge.
+const BOARD_VIEW_UNITS = 8 + BORDER_WIDTH * 2 + 0.4;
+
+/** Full extent per side including the border. */
+const BOARD_HALF_EXTENT = 4 + BORDER_WIDTH;
+/** Border strip center offset from board center. */
+const BORDER_CENTER = 4 + BORDER_WIDTH / 2;
+
+/**
+ * Opaque frame around the 8x8 playing area with coordinate labels baked
+ * into canvas textures. Also owns the solid base plate under the whole
+ * board -- without it, the squares' planes are back-face-culled when the
+ * OrbitControls camera rotates below the board plane and you see straight
+ * through to the scene background. The base plate's underside is what the
+ * camera sees from below instead, matching a physical chess board's wood
+ * backing.
+ */
+function BoardBorder({ palette, pov }: { palette: BoardPalette; pov: "w" | "b" }) {
+  const fileTexture = useMemo(
+    () => createFileStripTexture(palette.frame, palette.frameText, pov === "b"),
+    [palette.frame, palette.frameText, pov],
+  );
+  const rankTexture = useMemo(
+    () => createRankStripTexture(palette.frame, palette.frameText, pov === "b"),
+    [palette.frame, palette.frameText, pov],
+  );
+  useEffect(() => {
+    return () => {
+      fileTexture.dispose();
+      rankTexture.dispose();
+    };
+  }, [fileTexture, rankTexture]);
+
+  const BASE_THICKNESS = 0.08;
+  // Board squares sit at y=0; base top must sit strictly BELOW that or the
+  // two surfaces z-fight (the "board flickers during replay" symptom), so
+  // the box top lands at y=-BASE_TOP_INSET. Labels then sit strictly ABOVE
+  // the base top at y=LABEL_Y so they're not clipped by it either; both
+  // gaps need to be big enough to survive the perspective camera's depth
+  // precision at the far end of its clip range, not just technically
+  // nonzero.
+  const BASE_TOP_INSET = 0.01;
+  const LABEL_Y = 0.004;
+  const baseSize = BOARD_HALF_EXTENT * 2;
+
+  return (
+    <>
+      <mesh
+        position={[0, -BASE_TOP_INSET - BASE_THICKNESS / 2, 0]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry args={[baseSize, BASE_THICKNESS, baseSize]} />
+        <meshStandardMaterial color={palette.frame} roughness={0.8} />
+      </mesh>
+      <mesh position={[0, LABEL_Y, -BORDER_CENTER]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[8, BORDER_WIDTH]} />
+        <meshBasicMaterial map={fileTexture} />
+      </mesh>
+      <mesh position={[0, LABEL_Y, BORDER_CENTER]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[8, BORDER_WIDTH]} />
+        <meshBasicMaterial map={fileTexture} />
+      </mesh>
+      <mesh position={[-BORDER_CENTER, LABEL_Y, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[BORDER_WIDTH, 8]} />
+        <meshBasicMaterial map={rankTexture} />
+      </mesh>
+      <mesh position={[BORDER_CENTER, LABEL_Y, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[BORDER_WIDTH, 8]} />
+        <meshBasicMaterial map={rankTexture} />
+      </mesh>
+    </>
+  );
+}
 
 /**
  * Points the default camera at the board center on mount / camera-mode
@@ -168,6 +245,7 @@ export function BoardScene({ fen, cameraMode, theme }: BoardSceneProps) {
       <directionalLight position={[-6, 6, -4]} intensity={0.35} />
       <LookAtBoardCenter cameraMode={cameraMode} pov={pov} />
       {cameraMode === "3d" && <OrbitControls target={[0, 0, 0]} />}
+      <BoardBorder palette={palette} pov={pov} />
       <BoardSquares palette={palette} />
       <MoveHighlights fen={fen} />
       {pieces.map((piece) => (
