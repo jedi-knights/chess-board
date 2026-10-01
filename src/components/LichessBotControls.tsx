@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { parseBotOnlineList, type LichessBotSummary } from "../lib/lichess";
-import { useLichessBotStore } from "../state/lichessBotStore";
+import { parseRateLimitSeconds, useLichessBotStore } from "../state/lichessBotStore";
 
 const UPGRADE_CONFIRM_TEXT = "UPGRADE";
 const BOTS_TO_LIST = 20;
@@ -32,7 +32,7 @@ export function LichessBotControls() {
   const setToken = useLichessBotStore((s) => s.setToken);
   const clearToken = useLichessBotStore((s) => s.clearToken);
   const lastOutgoingDecline = useLichessBotStore((s) => s.lastOutgoingChallengeDecline);
-  const declinedBotUsernames = useLichessBotStore((s) => s.declinedBotUsernames);
+  const declinedBots = useLichessBotStore((s) => s.declinedBots);
   const clearOutgoingChallengeDecline = useLichessBotStore(
     (s) => s.clearOutgoingChallengeDecline,
   );
@@ -144,11 +144,12 @@ export function LichessBotControls() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setChallengeError(message);
-      // POST failed (400 rate limit, offline, etc.) -- treat as a
-      // definitive "don't try this one again this session" and
-      // filter them out of the list. Matches the user's intent:
-      // "I don't want bots I can't play to even show up".
-      recordBotChallengeFailure(username);
+      // POST failed (400 rate limit, offline, etc.) -- hide them from
+      // the list. When Lichess tells us the exact rate-limit window
+      // via `"ratelimit":{"seconds":N}`, use it; otherwise the store
+      // falls back to a 24 h TTL (one `bot.vsBot.day` reset cycle).
+      const rateLimitSeconds = parseRateLimitSeconds(message) ?? undefined;
+      recordBotChallengeFailure(username, rateLimitSeconds);
     } finally {
       setChallengingUsername(null);
     }
@@ -323,19 +324,23 @@ export function LichessBotControls() {
         </p>
       )}
       {(() => {
-        // Filter out bots that have declined us or rate-limited us this
-        // session -- the user explicitly asked that bots they can't play
-        // not show up at all. Also compute whether the filter removed
-        // anything, so a reassuring "N hidden" line surfaces instead of
-        // the user wondering if Browse-online-bots silently broke.
-        const visible = bots.filter((b) => !declinedBotUsernames.includes(b.username));
+        // Filter out bots whose decline entry hasn't yet expired. The
+        // store already prunes expired entries on rehydrate; this
+        // live check catches entries that expire mid-render (user left
+        // the panel open past the TTL boundary). Matches the user's
+        // intent: "I don't want bots I can't play to even show up".
+        const now = Date.now();
+        const activeDeclines = new Set(
+          declinedBots.filter((e) => e.expiresAtMs > now).map((e) => e.username),
+        );
+        const visible = bots.filter((b) => !activeDeclines.has(b.username));
         const hiddenCount = bots.length - visible.length;
         return (
           <>
             {hiddenCount > 0 && (
               <p className="hint">
-                {hiddenCount} bot{hiddenCount === 1 ? "" : "s"} hidden (declined or
-                unavailable this session). Click "Browse online bots" again to re-fetch.
+                {hiddenCount} bot{hiddenCount === 1 ? "" : "s"} hidden (previously declined
+                or rate-limited; they'll return once their quota resets).
               </p>
             )}
             {visible.length > 0 && (

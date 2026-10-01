@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useBlackEngineStore, useWhiteEngineStore } from "./engineStore";
 import { useGameModeStore } from "./gameModeStore";
 import { useGameStore } from "./gameStore";
-import { useLichessBotStore } from "./lichessBotStore";
+import { parseRateLimitSeconds, useLichessBotStore } from "./lichessBotStore";
 
 // Same rationale as engineStore.test.ts / lichessStore.test.ts: `invoke`
 // and `listen` are Tauri's IPC boundary, a genuine system edge. Everything
@@ -669,5 +669,33 @@ describe("upgradeToBotAccount", () => {
     expect(useLichessBotStore.getState().errorMessage).toContain("already a bot");
     // Pre-upgrade account survives -- the UI still shows what it was.
     expect(useLichessBotStore.getState().verifiedAccount?.username).toBe("u");
+  });
+});
+
+describe("parseRateLimitSeconds", () => {
+  it("extracts the seconds field from Lichess's 400 Bad Request body", () => {
+    // Verbatim shape of the error the user actually hit: the Rust
+    // error string is `<prefix>: <status> <reason> <jsonBody>`, so we
+    // match a raw substring rather than trying to split out and
+    // JSON-parse the embedded body.
+    const err =
+      'lichess rejected the challenge to maia1: 400 Bad Request {"error":"maia1 played 100 games against other bots today, please wait until 2026-10-01T07:06:08.826Z to challenge them.","ratelimit":{"key":"bot.vsBot.day","seconds":21164}}';
+    expect(parseRateLimitSeconds(err)).toBe(21164);
+  });
+
+  it("tolerates whitespace variations around the colon", () => {
+    expect(parseRateLimitSeconds('"seconds" : 60')).toBe(60);
+    expect(parseRateLimitSeconds('"seconds":  3600')).toBe(3600);
+  });
+
+  it("returns null when the field is absent", () => {
+    expect(parseRateLimitSeconds("lichess rejected the move e2e5: 400")).toBeNull();
+    expect(parseRateLimitSeconds("network down")).toBeNull();
+    expect(parseRateLimitSeconds("")).toBeNull();
+  });
+
+  it("returns null for non-positive or non-finite values", () => {
+    expect(parseRateLimitSeconds('"seconds":0')).toBeNull();
+    expect(parseRateLimitSeconds('"seconds":-5')).toBeNull();
   });
 });
