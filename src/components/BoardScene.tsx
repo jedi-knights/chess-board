@@ -83,11 +83,11 @@ const BORDER_CENTER = 4 + BORDER_WIDTH / 2;
  */
 function BoardBorder({ palette, pov }: { palette: BoardPalette; pov: "w" | "b" }) {
   const fileTexture = useMemo(
-    () => createFileStripTexture(palette.frame, palette.frameText, pov === "b"),
+    () => createFileStripTexture(palette.frame, palette.frameText, pov),
     [palette.frame, palette.frameText, pov],
   );
   const rankTexture = useMemo(
-    () => createRankStripTexture(palette.frame, palette.frameText, pov === "b"),
+    () => createRankStripTexture(palette.frame, palette.frameText, pov),
     [palette.frame, palette.frameText, pov],
   );
   useEffect(() => {
