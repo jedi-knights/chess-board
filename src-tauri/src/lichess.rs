@@ -1336,11 +1336,10 @@ pub async fn lichess_bot_online(nb: Option<u32>) -> Result<String, String> {
         .map_err(|e| format!("failed to read lichess response: {e}"))
 }
 
-/// Challenges a bot account to a real-time game. Always unrated -- this is
-/// for testing an engine, not chasing a rating, and keeping it non-
-/// configurable here avoids a second surface (a rated toggle) for a
-/// consequence (permanently affecting someone's rating) this tool has no
-/// business opting a user into by default.
+/// Challenges a bot account to a real-time game. `rated` is a parameter
+/// rather than hardcoded false so the operator can rate their own bot
+/// deliberately; the frontend defaults the checkbox to off so the fair-
+/// play default is still "casual testing doesn't move anyone's rating."
 #[tauri::command]
 pub async fn lichess_challenge_bot(
     account_cache: State<'_, SharedAccountCache>,
@@ -1348,6 +1347,7 @@ pub async fn lichess_challenge_bot(
     clock_limit_seconds: u32,
     clock_increment_seconds: u32,
     color: String,
+    rated: bool,
 ) -> Result<(), String> {
     validate_username(&username)?;
     if !matches!(color.as_str(), "random" | "white" | "black") {
@@ -1360,12 +1360,13 @@ pub async fn lichess_challenge_bot(
     let (token, _) = token_for_slot_verified(TokenSlot::Bot, &account_cache).await?;
     let client = new_client()?;
     let url = format!("https://lichess.org/api/challenge/{username}");
+    let rated_str = if rated { "true" } else { "false" };
     let response = post_with_retry(
         client
             .post(&url)
             .bearer_auth(&token)
             .form(&[
-                ("rated", "false"),
+                ("rated", rated_str),
                 ("clock.limit", &clock_limit_seconds.to_string()),
                 ("clock.increment", &clock_increment_seconds.to_string()),
                 ("color", &color),
