@@ -3,6 +3,11 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { parseBotOnlineList, type LichessBotSummary } from "../lib/lichess";
+import {
+  categoryFor,
+  matchPreset,
+  TIME_CONTROL_PRESETS,
+} from "../lib/lichessTimeControl";
 import { parseRateLimitSeconds, useLichessBotStore } from "../state/lichessBotStore";
 
 const UPGRADE_CONFIRM_TEXT = "UPGRADE";
@@ -19,10 +24,6 @@ export function LichessBotControls() {
   const [tokenInput, setTokenInput] = useState("");
   const [bots, setBots] = useState<LichessBotSummary[]>([]);
   const [loadingBots, setLoadingBots] = useState(false);
-  const [clockLimitMinutes, setClockLimitMinutes] = useState(5);
-  const [clockIncrementSeconds, setClockIncrementSeconds] = useState(3);
-  const [color, setColor] = useState<"random" | "white" | "black">("random");
-  const [sendRated, setSendRated] = useState(false);
   const [challengingUsername, setChallengingUsername] = useState<string | null>(null);
   const [challengeError, setChallengeError] = useState<string | null>(null);
 
@@ -49,6 +50,14 @@ export function LichessBotControls() {
   const setMovetimeMs = useLichessBotStore((s) => s.setMovetimeMs);
   const acceptRated = useLichessBotStore((s) => s.acceptRated);
   const setAcceptRated = useLichessBotStore((s) => s.setAcceptRated);
+  const color = useLichessBotStore((s) => s.challengeColor);
+  const setColor = useLichessBotStore((s) => s.setChallengeColor);
+  const sendRated = useLichessBotStore((s) => s.sendRated);
+  const setSendRated = useLichessBotStore((s) => s.setSendRated);
+  const clockLimitMinutes = useLichessBotStore((s) => s.clockLimitMinutes);
+  const setClockLimitMinutes = useLichessBotStore((s) => s.setClockLimitMinutes);
+  const clockIncrementSeconds = useLichessBotStore((s) => s.clockIncrementSeconds);
+  const setClockIncrementSeconds = useLichessBotStore((s) => s.setClockIncrementSeconds);
   const lagMarginMs = useLichessBotStore((s) => s.lagMarginMs);
   const setLagMarginMs = useLichessBotStore((s) => s.setLagMarginMs);
 
@@ -287,6 +296,28 @@ export function LichessBotControls() {
       </p>
       <div className="lichess-token-field">
         <label className="engine-field">
+          Time control
+          <select
+            value={matchPreset(clockLimitMinutes, clockIncrementSeconds)?.label ?? "custom"}
+            onChange={(e) => {
+              const preset = TIME_CONTROL_PRESETS.find((p) => p.label === e.target.value);
+              if (preset) {
+                setClockLimitMinutes(preset.clockLimitMinutes);
+                setClockIncrementSeconds(preset.clockIncrementSeconds);
+              }
+            }}
+          >
+            {TIME_CONTROL_PRESETS.map((preset) => (
+              <option key={preset.label} value={preset.label}>
+                {preset.label}
+              </option>
+            ))}
+            <option value="custom" disabled>
+              Custom ({clockLimitMinutes}+{clockIncrementSeconds})
+            </option>
+          </select>
+        </label>
+        <label className="engine-field">
           Minutes
           <input
             type="number"
@@ -323,6 +354,11 @@ export function LichessBotControls() {
           Rated
         </label>
       </div>
+      <p className="hint">
+        Category: {categoryFor(clockLimitMinutes, clockIncrementSeconds)} — rated games
+        update the {categoryFor(clockLimitMinutes, clockIncrementSeconds).toLowerCase()}{" "}
+        rating pool.
+      </p>
       <button onClick={browseBots} disabled={loadingBots}>
         {loadingBots ? "Loading…" : "Browse online bots"}
       </button>
