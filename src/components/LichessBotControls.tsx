@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { parseBotOnlineList, type LichessBotSummary } from "../lib/lichess";
 import {
@@ -85,6 +85,22 @@ export function LichessBotControls() {
       void verifyAccount();
     }
   }, [hasToken, verifiedAccount, verifyError, verifyAccount]);
+
+  // Auto-start listening once per mount when every precondition is
+  // satisfied: a valid token, a verified bot account, and an engine
+  // picked. The ref latch ensures we only auto-start a single time --
+  // if the user manually clicks Stop afterwards, the status returns
+  // to "idle" but we don't retry. The same latch also prevents a
+  // retry after a `startListening` failure (status "error"), so the
+  // user has to click the button themselves to opt back in.
+  const didAutoStartRef = useRef(false);
+  useEffect(() => {
+    if (didAutoStartRef.current) return;
+    if (canListen && status === "idle") {
+      didAutoStartRef.current = true;
+      void startListening();
+    }
+  }, [canListen, status, startListening]);
 
   async function chooseEngine() {
     const picked = await open({ multiple: false });
