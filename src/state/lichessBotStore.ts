@@ -22,6 +22,7 @@ import { useGameStore, type Rules } from "./gameStore";
 import {
   movesToApply,
   pendingMoveToSend,
+  type LichessColor,
   type LiveClocks,
   type LivePlayers,
 } from "./lichessStore";
@@ -108,6 +109,25 @@ interface LichessBotStoreState {
    * other players' ratings unless the operator has explicitly opted in.
    * See `decideChallenge` in `src/lib/lichess.ts` for the enforcement. */
   acceptRated: boolean;
+  /** Persisted preference for *outgoing* challenges from the Browse-
+   * Online-Bots list: color request and whether the challenge is rated.
+   * Separate from `acceptRated` (which gates incoming challenges) --
+   * the operator may want to deliberately rate their own bot by
+   * challenging others while still rejecting rated challenges from
+   * strangers. Defaults are `"white"` and `true` because the one
+   * operator this app is built for prefers that; the fair-play
+   * reasoning behind "default off" lives on `acceptRated`. */
+  challengeColor: LichessColor;
+  sendRated: boolean;
+  /** Persisted clock for outgoing challenges, in Lichess's own
+   * `clock.limit` (minutes) + `clock.increment` (seconds) form. The
+   * (min, inc) pair determines the time-control category (Bullet /
+   * Blitz / Rapid / Classical) Lichess assigns to the game; the
+   * challenge UI exposes a named-preset dropdown and these two
+   * fields are the authoritative state behind it. Default is
+   * Blitz 5+3. */
+  clockLimitMinutes: number;
+  clockIncrementSeconds: number;
   /** Persisted milliseconds to subtract from the engine's own-clock
    * value in `go wtime/btime` so network and IPC latency doesn't push
    * a tight game into a time forfeit. Default 100 ms. */
@@ -201,6 +221,10 @@ interface LichessBotStoreState {
   setEnginePath: (path: string) => void;
   setMovetimeMs: (ms: number) => void;
   setAcceptRated: (v: boolean) => void;
+  setChallengeColor: (color: LichessColor) => void;
+  setSendRated: (v: boolean) => void;
+  setClockLimitMinutes: (minutes: number) => void;
+  setClockIncrementSeconds: (seconds: number) => void;
   setLagMarginMs: (ms: number) => void;
   /** Called by the Browse-Online-Bots UI when the user initiates a new
    * challenge: clears the previous decline-reason banner (so it isn't
@@ -735,6 +759,10 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       verifiedAccount: null,
       verifyError: null,
       acceptRated: false,
+      challengeColor: "white",
+      sendRated: true,
+      clockLimitMinutes: 5,
+      clockIncrementSeconds: 3,
       lagMarginMs: 100,
       serverClocks: null,
       players: null,
@@ -828,6 +856,10 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       setEnginePath: (enginePath) => set({ enginePath }),
       setMovetimeMs: (movetimeMs) => set({ movetimeMs }),
       setAcceptRated: (acceptRated) => set({ acceptRated }),
+      setChallengeColor: (challengeColor) => set({ challengeColor }),
+      setSendRated: (sendRated) => set({ sendRated }),
+      setClockLimitMinutes: (clockLimitMinutes) => set({ clockLimitMinutes }),
+      setClockIncrementSeconds: (clockIncrementSeconds) => set({ clockIncrementSeconds }),
       setLagMarginMs: (lagMarginMs) => set({ lagMarginMs }),
 
       clearOutgoingChallengeDecline: () => set({ lastOutgoingChallengeDecline: null }),
@@ -988,6 +1020,10 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         enginePath: state.enginePath,
         movetimeMs: state.movetimeMs,
         acceptRated: state.acceptRated,
+        challengeColor: state.challengeColor,
+        sendRated: state.sendRated,
+        clockLimitMinutes: state.clockLimitMinutes,
+        clockIncrementSeconds: state.clockIncrementSeconds,
         lagMarginMs: state.lagMarginMs,
         // Persist declined bots so a dev-server restart or an
         // overnight close doesn't surface known-rate-limited
