@@ -11,7 +11,7 @@ import {
 import { parseRateLimitSeconds, useLichessBotStore } from "../state/lichessBotStore";
 
 const UPGRADE_CONFIRM_TEXT = "UPGRADE";
-const BOTS_TO_LIST = 100;
+const BOTS_TO_LIST = 200;
 
 function ratingsText(ratings: Record<string, number>): string {
   const entries = Object.entries(ratings);
