@@ -22,6 +22,7 @@ export function LichessBotControls() {
   const [clockLimitMinutes, setClockLimitMinutes] = useState(5);
   const [clockIncrementSeconds, setClockIncrementSeconds] = useState(3);
   const [color, setColor] = useState<"random" | "white" | "black">("random");
+  const [sendRated, setSendRated] = useState(false);
   const [challengingUsername, setChallengingUsername] = useState<string | null>(null);
   const [challengeError, setChallengeError] = useState<string | null>(null);
 
@@ -136,6 +137,7 @@ export function LichessBotControls() {
         clockLimitSeconds: clockLimitMinutes * 60,
         clockIncrementSeconds,
         color,
+        rated: sendRated,
       });
       // Success means the POST landed -- Lichess has queued the
       // challenge. Whether the target accepts is a separate async
@@ -281,7 +283,7 @@ export function LichessBotControls() {
       <h3>Challenge an engine on Lichess</h3>
       <p className="hint">
         Needs "Start listening" above running first, so the resulting game has somewhere
-        to land. Always unrated.
+        to land. Default casual; tick "Rated" to affect both bots&rsquo; ratings.
       </p>
       <div className="lichess-token-field">
         <label className="engine-field">
@@ -311,6 +313,14 @@ export function LichessBotControls() {
             <option value="white">White</option>
             <option value="black">Black</option>
           </select>
+        </label>
+        <label className="engine-field">
+          <input
+            type="checkbox"
+            checked={sendRated}
+            onChange={(e) => setSendRated(e.target.checked)}
+          />
+          Rated
         </label>
       </div>
       <button onClick={browseBots} disabled={loadingBots}>
