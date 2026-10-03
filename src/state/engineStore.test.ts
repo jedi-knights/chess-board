@@ -34,7 +34,7 @@ function emit(eventName: string, payload: unknown) {
 
 const IDLE_ENGINE_STATE: Pick<
   EngineStoreState,
-  "path" | "status" | "movetimeMs" | "lastInfo" | "searchInfoHistory" | "options" | "optionValues" | "engineName" | "errorMessage"
+  "path" | "status" | "movetimeMs" | "lastInfo" | "searchInfoHistory" | "options" | "optionValues" | "optionOverrides" | "engineName" | "errorMessage"
 > = {
   path: null,
   status: "idle",
@@ -43,6 +43,7 @@ const IDLE_ENGINE_STATE: Pick<
   searchInfoHistory: [],
   options: [],
   optionValues: {},
+  optionOverrides: {},
   engineName: null,
   errorMessage: null,
 };
@@ -138,6 +139,20 @@ describe("startEngine", () => {
     expect(state.errorMessage).toContain("spawn failed");
     expect(useGameStore.getState().mode).toBe("replay");
   });
+
+  it("applies persisted optionOverrides via setoption after the uci handshake", async () => {
+    useWhiteEngineStore.setState({ optionOverrides: { UseNNUE: "true", Hash: "128" } });
+    await useWhiteEngineStore.getState().startEngine("/bin/engine");
+
+    const writes = mockedInvoke.mock.calls
+      .filter(([cmd]) => cmd === "engine_write_line")
+      .map(([, args]) => (args as { line: string }).line);
+    expect(writes).toContain("uci");
+    expect(writes).toContain("setoption name UseNNUE value true");
+    expect(writes).toContain("setoption name Hash value 128");
+    expect(useWhiteEngineStore.getState().optionValues.UseNNUE).toBe("true");
+    expect(useWhiteEngineStore.getState().optionValues.Hash).toBe("128");
+  });
 });
 
 describe("stopEngine", () => {
@@ -169,6 +184,11 @@ describe("setOption", () => {
       side: "w",
       line: "setoption name Hash value 256",
     });
+  });
+
+  it("writes the value to optionOverrides so it survives a restart", () => {
+    useWhiteEngineStore.getState().setOption("UseNNUE", "false");
+    expect(useWhiteEngineStore.getState().optionOverrides.UseNNUE).toBe("false");
   });
 
   it("leaves optionValues untouched for a button-type option with no value", () => {
