@@ -62,22 +62,27 @@ function OptionControl({ option, useEngine }: { option: UciOption; useEngine: En
  * Renders one control per UCI option the connected engine advertised
  * after `uci` (e.g. chess-engine's `UseNNUE` checkbox, `EvalFile` path) --
  * these were previously invisible; every option line was silently ignored.
+ *
+ * When `side` is passed explicitly, the controller-based gate is bypassed --
+ * used by the "Preview engine options" affordance in bot mode, where no
+ * side has `controllers[side] === "engine"` yet but the operator still
+ * wants to see the engine's option list before accepting a challenge.
  */
-export function EngineOptions() {
+export function EngineOptions({ side }: { side?: "w" | "b" } = {}) {
   // Only meaningful when some side is engine-controlled. In human-vs-Lichess
   // and other engine-free modes, a fall-through default here rendered the
   // *stopped* black engine's stale options; setOption on that store then
   // called failEngine -> exitPlayMode, silently killing the live Lichess
   // game. No engine controller -> nothing to render.
   const controllers = useGameStore((s) => s.controllers);
-  const engineSide: "w" | "b" | null =
-    controllers.w === "engine" ? "w" : controllers.b === "engine" ? "b" : null;
+  const resolvedSide: "w" | "b" | null =
+    side ?? (controllers.w === "engine" ? "w" : controllers.b === "engine" ? "b" : null);
   // Hooks must be called unconditionally, so use whichever side (default "w"
   // when neither is engine); the null check below discards the result.
-  const useEngine = engineStoreForSide(engineSide ?? "w");
+  const useEngine = engineStoreForSide(resolvedSide ?? "w");
   const options = useEngine((s) => s.options);
 
-  if (engineSide === null || options.length === 0) {
+  if (resolvedSide === null || options.length === 0) {
     return null;
   }
 

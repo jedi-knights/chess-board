@@ -537,6 +537,22 @@ this file and the human-facing docs.
   advertised options is a safe no-op. `lichessBotStore`'s own `enginePath`/`movetimeMs` persist
   separately again (`chess-board-lichess-bot-engine`) — see its own doc comment for why it
   can't just reuse a per-side engine store's persisted values.
+- **Bot mode's "Preview engine options" affordance uses the White engine slot, and
+  `handleGameStart` propagates its overrides to Black when needed.** Engine-vs-Lichess
+  mode can't normally show `EngineOptions` before a game starts (controllers are both
+  `"lichess"` until `applyDerivedControllers` fires on `gameFull`). The preview button in
+  `LichessBotControls` spawns the engine on the White store so the operator can see what
+  UCI options the binary advertises and tweak them before accepting a challenge; the
+  options panel reuses `<EngineOptions side="w" />` via the component's optional `side`
+  prop, bypassing the controller gate. Because Lichess picks the bot's color per game,
+  `handleGameStart` copies White's `optionOverrides` into Black's store (and stops any
+  idle leftover preview engine on White) whenever `botColor === "b"` — so preview edits
+  always apply regardless of assigned color. The copy is an outer `...spread`, so an
+  entry already in Black's store (e.g. a mid-game `setOption` on a Black-assigned game)
+  is overwritten only if the user's White preview has a conflicting key; otherwise
+  Black's own value stays. Do not "deduplicate" by moving `optionOverrides` into a
+  single shared slot — that breaks the independent per-side design for Engine-vs-Engine
+  mode.
 - **The engine label shows a derived "owner/repo" identifier** (`src/lib/engineIdentifier.ts`),
   not a raw path or bare filename, and the label text itself distinguishes "selected" from
   "running" (`Engine: x` vs `Running: x` vs `Starting: x…`) — do not collapse that back to a
