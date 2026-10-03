@@ -523,11 +523,18 @@ this file and the human-facing docs.
   already in flight would spawn a second process, whose Rust-side startup kills the first
   one mid-flight — surfacing as a misleading "engine process exited unexpectedly" that has
   nothing to do with the engine binary itself. See `NOT_RUNNING` check in `engineStore.ts`.
-- **Each side's engine path and movetime persist independently** via `createEngineStore`'s
-  own `persist` key (`chess-board-engine-w` / `chess-board-engine-b`), same pattern as
-  `themeStore`. Only `path`/`movetimeMs` are persisted (`partialize`) — live
-  `status`/`lastInfo`/`errorMessage` must not survive a reload, since they describe a
-  process that no longer exists. `lichessBotStore`'s own `enginePath`/`movetimeMs` persist
+- **Each side's engine path, movetime, and option overrides persist independently** via
+  `createEngineStore`'s own `persist` key (`chess-board-engine-w` /
+  `chess-board-engine-b`), same pattern as `themeStore`. `path`/`movetimeMs`/
+  `optionOverrides` are persisted (`partialize`) — live `status`/`lastInfo`/
+  `errorMessage` must not survive a reload, since they describe a process that no longer
+  exists. `optionOverrides` is a `Record<string, string>` of user-chosen UCI option values
+  that is seeded with `{ UseNNUE: "true" }` on first run and re-applied via `setoption`
+  on every engine start (fire-and-forget after the `uci` line, before the variant setopts
+  so a per-game variant override wins any collision). Every `setOption` call writes to
+  both `optionValues` (live UI state) and `optionOverrides` (persistence). Engines ignore
+  unknown option names per the UCI spec, so an override that doesn't match this engine's
+  advertised options is a safe no-op. `lichessBotStore`'s own `enginePath`/`movetimeMs` persist
   separately again (`chess-board-lichess-bot-engine`) — see its own doc comment for why it
   can't just reuse a per-side engine store's persisted values.
 - **The engine label shows a derived "owner/repo" identifier** (`src/lib/engineIdentifier.ts`),

@@ -54,6 +54,15 @@ export interface EngineStoreState {
   options: UciOption[];
   /** The value last set (or the option's own default) per option name. */
   optionValues: Record<string, string>;
+  /** User-chosen option overrides that persist across sessions and are
+   * re-applied via `setoption` on every engine start. Seeded with
+   * `UseNNUE: "true"` so a fresh install enables NNUE eval by default
+   * (chess-engine and Stockfish both expose this option; engines that
+   * don't advertise the name just ignore the `setoption` line per the
+   * UCI spec, so this seed is a safe no-op elsewhere). When the user
+   * changes an option in the EngineOptions UI, the new value is written
+   * here as well as to `optionValues` so it survives a restart. */
+  optionOverrides: Record<string, string>;
   /** The engine's self-reported name from its UCI `id name` reply, e.g.
    * "Stockfish 16.1". Null until the engine has sent `id`; cleared on
    * stop/restart so a prior session's name can't leak into the next one. */
@@ -294,6 +303,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
         searchInfoHistory: [],
         options: [],
         optionValues: {},
+        optionOverrides: { UseNNUE: "true" },
         engineName: null,
         errorMessage: null,
 
@@ -302,7 +312,10 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
 
         setOption: (name, value) => {
           if (value !== undefined) {
-            set((state) => ({ optionValues: { ...state.optionValues, [name]: value } }));
+            set((state) => ({
+              optionValues: { ...state.optionValues, [name]: value },
+              optionOverrides: { ...state.optionOverrides, [name]: value },
+            }));
           }
           invoke("engine_write_line", { side, line: buildSetOptionCommand(name, value) }).catch(
             (err) => failEngine("error", String(err)),
@@ -326,16 +339,21 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
           // grow unbounded across a long session -- app launch clears it too
           // (see src-tauri/src/lib.rs's .setup() hook), this covers "new game".
           invoke("debug_log_clear").catch(() => {});
-          set({
+          set((state) => ({
             status: "starting",
             path,
             errorMessage: null,
             lastInfo: null,
             searchInfoHistory: [],
             options: [],
-            optionValues: {},
+            // Seed optionValues from the persisted overrides so the UI
+            // reflects the user's chosen values immediately -- before the
+            // engine echoes its own option list back. The stdout listener's
+            // `name in optionValues` short-circuit then prevents the
+            // engine's own default from overwriting an active override.
+            optionValues: { ...state.optionOverrides },
             engineName: null,
-          });
+          }));
           logDebug(`starting engine: ${path}`);
           try {
             await invoke("engine_start", { side, path });
@@ -344,6 +362,19 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
             // already works without waiting on uciok, so this doesn't
             // change the ready/turn-orchestration timing at all.
             void invoke("engine_write_line", { side, line: "uci" });
+            // Re-apply persisted user option overrides (e.g. UseNNUE).
+            // Sent before the variant setopts below so a colliding
+            // variant setting (UCI_Variant / UCI_Chess960) wins, which
+            // is what the user actually wants mid-game regardless of
+            // their persisted preference. UCI engines ignore unknown
+            // option names, so an override that doesn't match this
+            // engine's advertised options is a safe no-op.
+            for (const [name, value] of Object.entries(get().optionOverrides)) {
+              void invoke("engine_write_line", {
+                side,
+                line: buildSetOptionCommand(name, value),
+              });
+            }
             // When the active game is Chess960, flip the engine's output
             // format now (ships before the first `position`/`go` so the
             // engine's search internally uses UCI_Chess960 encoding for
@@ -468,7 +499,11 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
       }),
       {
         name: `chess-board-engine-${side}`,
-        partialize: (state) => ({ path: state.path, movetimeMs: state.movetimeMs }),
+        partialize: (state) => ({
+          path: state.path,
+          movetimeMs: state.movetimeMs,
+          optionOverrides: state.optionOverrides,
+        }),
       },
     ),
   );
