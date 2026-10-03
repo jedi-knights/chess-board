@@ -8,7 +8,9 @@ import {
   matchPreset,
   TIME_CONTROL_PRESETS,
 } from "../lib/lichessTimeControl";
+import { ENGINE_NOT_RUNNING, useWhiteEngineStore } from "../state/engineStore";
 import { parseRateLimitSeconds, useLichessBotStore } from "../state/lichessBotStore";
+import { EngineOptions } from "./EngineOptions";
 
 const UPGRADE_CONFIRM_TEXT = "UPGRADE";
 const BOTS_TO_LIST = 200;
@@ -60,6 +62,18 @@ export function LichessBotControls() {
   const setClockIncrementSeconds = useLichessBotStore((s) => s.setClockIncrementSeconds);
   const lagMarginMs = useLichessBotStore((s) => s.lagMarginMs);
   const setLagMarginMs = useLichessBotStore((s) => s.setLagMarginMs);
+
+  // The preview affordance spawns the engine on the White store so the
+  // operator can see what options the engine advertises before accepting
+  // a challenge. White is arbitrary -- bot mode doesn't know its assigned
+  // color until Lichess sends `gameFull`. `handleGameStart` copies
+  // White's `optionOverrides` to the resolved side if Black is assigned,
+  // so edits in the preview apply regardless of color.
+  const previewEngineStatus = useWhiteEngineStore((s) => s.status);
+  const previewEnginePath = useWhiteEngineStore((s) => s.path);
+  const startPreviewEngine = useWhiteEngineStore((s) => s.startEngine);
+  const stopPreviewEngine = useWhiteEngineStore((s) => s.stopEngine);
+  const previewReady = previewEngineStatus === "ready";
 
   const status = useLichessBotStore((s) => s.status);
   const errorMessage = useLichessBotStore((s) => s.errorMessage);
@@ -304,6 +318,40 @@ export function LichessBotControls() {
         {enginePath && ` (engine: ${deriveEngineIdentifier(enginePath)})`}
       </p>
       {errorMessage && <p className="load-error">{errorMessage}</p>}
+
+      <h3>Engine options</h3>
+      <p className="hint">
+        Spawn the engine briefly to inspect and tweak its UCI options (UseNNUE,
+        Hash, EvalFile, &hellip;) before accepting a challenge. Edits persist across
+        sessions. Not available during a live game &mdash; the panel below
+        appears automatically when a game is in progress.
+      </p>
+      {status === "playing" ? (
+        // During a live game, EngineOptions renders via the normal
+        // controller-based path (gameStore.controllers[side] === "engine").
+        // Rendering it here with a forced side would double-render; let
+        // the outer App-level EngineOptions handle it.
+        <p className="hint">Game in progress &mdash; see the options panel below.</p>
+      ) : !previewReady ? (
+        <button
+          onClick={() => enginePath && void startPreviewEngine(enginePath)}
+          disabled={!enginePath || !ENGINE_NOT_RUNNING.has(previewEngineStatus)}
+        >
+          {previewEngineStatus === "starting" ? "Starting…" : "Preview engine options"}
+        </button>
+      ) : (
+        <>
+          <button onClick={() => void stopPreviewEngine()}>Stop preview</button>
+          <EngineOptions side="w" />
+          {previewEnginePath && previewEnginePath !== enginePath && (
+            <p className="hint">
+              Previewing a different engine ({deriveEngineIdentifier(previewEnginePath)}) than
+              the one currently chosen ({enginePath ? deriveEngineIdentifier(enginePath) : "none"})
+              &mdash; click Stop preview, pick again, then re-open preview.
+            </p>
+          )}
+        </>
+      )}
 
       <h3>Challenge an engine on Lichess</h3>
       <p className="hint">

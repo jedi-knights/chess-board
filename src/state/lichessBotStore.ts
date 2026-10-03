@@ -418,6 +418,24 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
   }
   const engine = engineStoreForSide(botColor);
 
+  // The "Preview engine options" affordance in LichessBotControls spawns
+  // the engine on the White store so the operator can tweak options
+  // before accepting a challenge. In bot mode the engine binary is the
+  // same regardless of color, so a preview edit should apply even when
+  // Lichess assigns Black -- copy White's overrides over to Black's
+  // store before Black's engine spawns. Also stops a running preview on
+  // the opposite side so an idle leftover process doesn't leak.
+  if (botColor === "b") {
+    const whiteState = engineStoreForSide("w").getState();
+    engine.setState((state) => ({
+      optionOverrides: { ...state.optionOverrides, ...whiteState.optionOverrides },
+    }));
+    if (!ENGINE_NOT_RUNNING.has(whiteState.status)) {
+      logDebug("stopping leftover preview engine on white before starting black");
+      await engineStoreForSide("w").getState().stopEngine();
+    }
+  }
+
   logDebug(`game starting: ${gameId}, engine plays ${botColor}`);
   useLichessBotStore.setState({
     activeGameId: gameId,
