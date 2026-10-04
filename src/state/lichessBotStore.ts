@@ -634,7 +634,13 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
       pendingStartFen: null,
       pendingRules: "chess",
       serverClocks: null,
-      players: null,
+      // Deliberately NOT cleared on terminal status: WinnerBanner reads
+      // `players` to show the actual opponent name (e.g. "StockfishBot
+      // wins by checkmate") instead of a generic "Lichess wins". The
+      // next game's `handleGameStart` nulls `players` before `gameFull`
+      // repopulates it, so there's no stale-name leak into a new game;
+      // this matches the human-side lichessStore, which also preserves
+      // `players` across game-over.
       opponentGone: null,
     });
     useGameStore.getState().exitPlayMode();
