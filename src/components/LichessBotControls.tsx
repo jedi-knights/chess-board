@@ -81,6 +81,11 @@ export function LichessBotControls() {
   const upgradeToBotAccount = useLichessBotStore((s) => s.upgradeToBotAccount);
   const startListening = useLichessBotStore((s) => s.startListening);
   const stopListening = useLichessBotStore((s) => s.stopListening);
+  const autoRunning = useLichessBotStore((s) => s.autoRunning);
+  const autoRunQueue = useLichessBotStore((s) => s.autoRunQueue);
+  const autoRunCurrentUsername = useLichessBotStore((s) => s.autoRunCurrentUsername);
+  const startAutoRun = useLichessBotStore((s) => s.startAutoRun);
+  const stopAutoRun = useLichessBotStore((s) => s.stopAutoRun);
 
   const listening = status === "listening" || status === "playing";
   const canChallenge = status === "listening";
@@ -426,6 +431,24 @@ export function LichessBotControls() {
       <button onClick={browseBots} disabled={loadingBots}>
         {loadingBots ? "Loading…" : "Browse online bots"}
       </button>
+      {!autoRunning ? (
+        <button onClick={startAutoRun} disabled={!canChallenge}>
+          Auto-run matches
+        </button>
+      ) : (
+        <button onClick={stopAutoRun}>Stop auto-run</button>
+      )}
+      {autoRunning && (
+        <p className="hint">
+          Auto-running:{" "}
+          {autoRunCurrentUsername
+            ? `trying ${autoRunCurrentUsername}`
+            : autoRunQueue.length > 0
+              ? "picking next bot…"
+              : "refreshing bot list…"}
+          {autoRunQueue.length > 0 && ` (${autoRunQueue.length} left in cycle)`}
+        </p>
+      )}
       {challengeError && <p className="load-error">{challengeError}</p>}
       {lastOutgoingDecline && (
         <p className="hint">
