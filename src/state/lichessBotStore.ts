@@ -835,6 +835,18 @@ function scheduleAutoRunRetry(ms: number) {
   clearAutoRunTimeout();
   autoRunTimeout = window.setTimeout(() => {
     autoRunTimeout = null;
+    // Clear the pending-challenge latch before advancing. This is the
+    // silent-bot path: POST landed, no gameStart / challengeDeclined
+    // arrived within the window, so we move on. The decline and POST-
+    // error paths clear this themselves before scheduling; this clear
+    // is a no-op for them but required for the silent-bot path to not
+    // get stuck in `autoRunStep`'s `autoRunCurrentUsername !== null`
+    // re-entry guard.
+    const stuck = useLichessBotStore.getState().autoRunCurrentUsername;
+    if (stuck !== null) {
+      appendDebugLog(`[lichess-bot] auto-run: no response from ${stuck}, moving on`);
+      useLichessBotStore.setState({ autoRunCurrentUsername: null });
+    }
     void autoRunStep();
   }, ms);
 }
