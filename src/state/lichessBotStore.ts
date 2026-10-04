@@ -17,6 +17,7 @@ import {
   type LichessOpponentGone,
 } from "../lib/lichess";
 import { installLichessEventBusOnce } from "../lib/lichessEventBus";
+import { buildPgn, type PgnHeaders } from "../lib/pgnExport";
 import type { GoOptions } from "../lib/uci";
 import { ENGINE_NOT_RUNNING, engineStoreForSide } from "./engineStore";
 import { useGameStore, type Rules } from "./gameStore";
@@ -178,6 +179,14 @@ interface LichessBotStoreState {
    * "chess960". Cleared on game finish / stopListening alongside
    * pendingStartFen. */
   pendingRules: Rules;
+  /** Base clock in ms, captured from `gameFull`'s top-level `clock.initial`
+   * once per game (the only line that carries it; subsequent `gameState`
+   * updates don't). Used purely by the on-disk PGN recording to populate
+   * the `TimeControl` tag. `null` for correspondence/unlimited games (no
+   * clock block) and between games. Paired with `clockIncrementBaseMs`
+   * below -- both must be non-null to emit a TimeControl tag. */
+  clockInitialMs: number | null;
+  clockIncrementBaseMs: number | null;
   lastSentUci: string | null;
   /** Most recent `challengeDeclined` event on our account stream for
    * an *outgoing* challenge we sent (via "Browse online bots →
@@ -472,6 +481,12 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
     players: null,
     opponentGone: null,
     autoRunCurrentUsername: null,
+    // Reset the clock-baseline capture; the first `gameFull` for this
+    // game will repopulate them. Clearing here guards against a stale
+    // previous-game TimeControl leaking into this one's PGN recording
+    // if gameFull somehow doesn't deliver `clock` (unlimited game etc.).
+    clockInitialMs: null,
+    clockIncrementBaseMs: null,
   });
 
   // Same ordering as EngineControls/LichessControls: reset the board
@@ -603,6 +618,98 @@ function applyBotPlayers(update: LichessMoveUpdate) {
   });
 }
 
+/** Maps a Lichess variant key to the PGN `Variant` tag spelling that
+ * python-chess / lc0 / Stockfish's training pipeline recognize. The
+ * default `"Standard"` is returned for `null` and `"standard"` so the
+ * tag is always populated for a successful recording. */
+function variantToPgnName(key: string | null): string {
+  switch (key) {
+    case "chess960":
+      return "Chess960";
+    case "kingOfTheHill":
+      return "King of the Hill";
+    case "threeCheck":
+      return "Three-check";
+    case "antichess":
+      return "Antichess";
+    case "atomic":
+      return "Atomic";
+    case "horde":
+      return "Horde";
+    case "racingKings":
+      return "Racing Kings";
+    case "crazyhouse":
+      return "Crazyhouse";
+    default:
+      return "Standard";
+  }
+}
+
+/** Lichess's `winner` + terminal `status` → PGN Result tag. */
+function resultTag(winner: "white" | "black" | null, status: string): string {
+  if (winner === "white") return "1-0";
+  if (winner === "black") return "0-1";
+  if (status === "draw" || status === "stalemate") return "1/2-1/2";
+  return "*";
+}
+
+/** Sanitizes a Lichess username for use in a filename. Lichess
+ * usernames are already `[a-zA-Z0-9_-]{3,20}` so this is a no-op for
+ * valid names; strips anything else defensively so a weird edge case
+ * can't produce a path separator or similar. */
+function sanitizeForFilename(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9_-]/g, "");
+  return cleaned.length > 0 ? cleaned : "unknown";
+}
+
+/** Builds a PGN from current store state + the terminal update and
+ * fire-and-forgets a write to `<app_data_dir>/recordings/<name>.pgn`.
+ * Called from the terminal-status branch of `applyIncomingBotMoves`
+ * before the state teardown so `activeGameId`, players, and clock
+ * baselines are still populated. Errors are logged but don't disrupt
+ * the auto-run handoff -- recording is a nice-to-have, not a hard
+ * dependency of the game loop. */
+function recordFinishedGameToDisk(update: LichessMoveUpdate) {
+  const bot = useLichessBotStore.getState();
+  const game = useGameStore.getState();
+  const gameId = bot.activeGameId;
+  if (!gameId) return;
+  const whiteName = bot.players?.white?.name ?? update.whiteName ?? "unknown";
+  const blackName = bot.players?.black?.name ?? update.blackName ?? "unknown";
+  const whiteTitle = bot.players?.white?.title ?? update.whiteTitle ?? undefined;
+  const blackTitle = bot.players?.black?.title ?? update.blackTitle ?? undefined;
+  const result = resultTag(update.winner, update.status);
+  // UTC date in PGN's standard "YYYY.MM.DD" shape (period-separated).
+  const now = new Date();
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const pgnDate = `${now.getUTCFullYear()}.${pad(now.getUTCMonth() + 1)}.${pad(now.getUTCDate())}`;
+  // ISO date for the filename (hyphens, universally sort-friendly).
+  const fileDate = `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())}`;
+  const timeControl =
+    bot.clockInitialMs !== null && bot.clockIncrementBaseMs !== null
+      ? `${Math.round(bot.clockInitialMs / 1000)}+${Math.round(bot.clockIncrementBaseMs / 1000)}`
+      : undefined;
+  const headers: PgnHeaders = {
+    Event: "Lichess bot game",
+    Site: `https://lichess.org/${gameId}`,
+    Date: pgnDate,
+    Round: "-",
+    White: whiteName,
+    Black: blackName,
+    Result: result,
+    WhiteTitle: whiteTitle ?? undefined,
+    BlackTitle: blackTitle ?? undefined,
+    Variant: variantToPgnName(update.variant),
+    TimeControl: timeControl,
+  };
+  const pgn = buildPgn(game.plies, headers, game.startFen ?? undefined);
+  const filename = `${fileDate}_${gameId}_${sanitizeForFilename(whiteName)}_vs_${sanitizeForFilename(blackName)}.pgn`;
+  appendDebugLog(`[lichess-bot] recording game to ${filename}`);
+  invoke("recording_write_pgn", { filename, contents: pgn }).catch((err) => {
+    appendDebugLog(`[lichess-bot] recording failed: ${String(err)}`);
+  });
+}
+
 function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   if (!update) return;
   // Update serverClocks *before* the move loop -- attemptMove fires
@@ -613,6 +720,15 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
   // in bullet games would consistently over-allocate.
   const prevClocks = commitServerClocksEarly(update);
   applyBotPlayers(update);
+  // gameFull's top-level `clock.initial`/`clock.increment` only arrives
+  // on the first update of the game -- capture them for the on-disk
+  // PGN's TimeControl tag.
+  if (update.clockInitialMs !== null && update.clockIncrementBaseMs !== null) {
+    useLichessBotStore.setState({
+      clockInitialMs: update.clockInitialMs,
+      clockIncrementBaseMs: update.clockIncrementBaseMs,
+    });
+  }
   // "From Position" challenges arrive with a non-null `initialFen` on
   // the gameFull line only -- set it before applying any moves so the
   // engine's `position fen ...` command (buildPositionCommand picks
@@ -644,6 +760,11 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
 
   if (isTerminalStatus(update.status)) {
     logDebug(`game over: ${update.status}`);
+    // Record the finished game to disk BEFORE the state teardown below
+    // wipes activeGameId / clock baselines. Fire-and-forget: a write
+    // failure logs via the catch but must not disrupt the auto-run
+    // handoff below.
+    recordFinishedGameToDisk(update);
     // Ask the engine to stop searching if it's mid-move -- the engine's
     // resulting `bestmove` is then dropped by applyEngineBestMove's late-
     // bestmove guard. Without this, the engine keeps its search context
@@ -662,6 +783,8 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
       pendingStartFen: null,
       pendingRules: "chess",
       serverClocks: null,
+      clockInitialMs: null,
+      clockIncrementBaseMs: null,
       // Deliberately NOT cleared on terminal status: WinnerBanner reads
       // `players` to show the actual opponent name (e.g. "StockfishBot
       // wins by checkmate") instead of a generic "Lichess wins". The
@@ -1018,6 +1141,8 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       activeGameId: null,
       pendingStartFen: null,
       pendingRules: "chess",
+      clockInitialMs: null,
+      clockIncrementBaseMs: null,
       lastSentUci: null,
       lastOutgoingChallengeDecline: null,
       declinedBots: [],
@@ -1256,6 +1381,8 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
             activeGameId: null,
             pendingStartFen: null,
             pendingRules: "chess",
+            clockInitialMs: null,
+            clockIncrementBaseMs: null,
             serverClocks: null,
             players: null,
             opponentGone: null,
