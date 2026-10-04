@@ -394,12 +394,19 @@ let listenersInstalled = false;
 /** Human-mode's per-game stream listeners (`lichess-game-stream` /
  * `lichess-game-exit`). The *account* event stream is shared with
  * `lichessBotStore` via `lichessEventBus` -- installed separately in
- * `primeForNewSession`. */
+ * `primeForNewSession`.
+ *
+ * On HMR module replace, the `import.meta.hot?.dispose` callback
+ * unlistens the Tauri subscriptions and the gameStore watcher, and
+ * resets the latch so the fresh module instance can install cleanly --
+ * without this, every edit to this module (or its import graph) stacks
+ * another live listener on the same Rust events, causing duplicate
+ * `applyIncomingMoves` / `maybeSendHumanMove` dispatches in dev. */
 function installLichessGameListenersOnce() {
   if (listenersInstalled) return;
   listenersInstalled = true;
 
-  void listen<string>("lichess-game-stream", (event) => {
+  const streamUnlisten = listen<string>("lichess-game-stream", (event) => {
     // Every incoming line is checked against both parsers -- Lichess
     // multiplexes gameFull/gameState/opponentGone (and chatLine, which
     // both parsers correctly return `null` for) onto the same stream.
@@ -417,17 +424,35 @@ function installLichessGameListenersOnce() {
     }
   });
 
-  void listen<string>("lichess-game-exit", (event) => {
+  const exitUnlisten = listen<string>("lichess-game-exit", (event) => {
     if (useLichessStore.getState().status === "connected") {
       failLichess(event.payload);
     }
   });
 
-  useGameStore.subscribe((state, prevState) => {
+  const unsubscribeGameStore = useGameStore.subscribe((state, prevState) => {
     if (state.plies.length !== prevState.plies.length) {
       maybeSendHumanMove();
     }
   });
+
+  if (import.meta.hot) {
+    import.meta.hot.dispose(async () => {
+      try {
+        (await streamUnlisten)();
+      } catch {
+        // swallow: dispose must not throw; a failed unlisten leaks at
+        // worst one listener (same outcome as before this fix).
+      }
+      try {
+        (await exitUnlisten)();
+      } catch {
+        /* same */
+      }
+      unsubscribeGameStore();
+      listenersInstalled = false;
+    });
+  }
 }
 
 const NOT_CONNECTED = new Set<LichessStatus>(["idle", "error", "gameOver"]);

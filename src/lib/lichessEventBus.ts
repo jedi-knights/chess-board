@@ -49,17 +49,39 @@ function dispatchExit(reason: string) {
 }
 
 /** Idempotent: safe to call on every mode entry, listener install
- * happens exactly once. */
+ * happens exactly once. On HMR module replace, the `import.meta.hot?.dispose`
+ * callback unlistens the Tauri subscriptions and resets the latch so the
+ * fresh module instance can install cleanly -- without this, every edit
+ * to a file in this import graph stacks another live listener on the same
+ * Rust event, producing duplicate dispatches to `handleAccountEvent`
+ * (and so duplicate `handleGameStart` / `handleGameFinish` runs) in dev. */
 export function installLichessEventBusOnce(): void {
   if (installed) return;
   installed = true;
 
-  void listen<string>("lichess-event-stream", (event) => {
+  const streamUnlisten = listen<string>("lichess-event-stream", (event) => {
     const parsed = parseLichessAccountEvent(event.payload);
     if (parsed) dispatch(parsed);
   });
 
-  void listen<string>("lichess-event-exit", (event) => {
+  const exitUnlisten = listen<string>("lichess-event-exit", (event) => {
     dispatchExit(event.payload);
   });
+
+  if (import.meta.hot) {
+    import.meta.hot.dispose(async () => {
+      try {
+        (await streamUnlisten)();
+      } catch {
+        // swallow: dispose must not throw, and a failed unlisten is at
+        // worst a leaked listener (same outcome as before this fix).
+      }
+      try {
+        (await exitUnlisten)();
+      } catch {
+        /* same */
+      }
+      installed = false;
+    });
+  }
 }
