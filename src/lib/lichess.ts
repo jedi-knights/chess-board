@@ -82,6 +82,20 @@ export interface LichessMoveUpdate {
    * differs from "standard" -- Chess960 toggles the engine's
    * UCI_Chess960 option on game start. */
   variant: string | null;
+  /** `"white"` / `"black"` on a terminal gameState (mate, resign,
+   * outoftime, ...); `null` when a draw / aborted / not-yet-terminal
+   * state. Mapped straight to the PGN `Result` tag when recording
+   * finished games to disk. */
+  winner: "white" | "black" | null;
+  /** Base clock in ms, extracted from gameFull's top-level `clock.initial`
+   * field. `null` for correspondence / unlimited games (no `clock` block)
+   * and on every subsequent `gameState` line (which carries the live
+   * `wtime`/`btime` but not the base). Used to format the PGN
+   * `TimeControl` tag when recording. */
+  clockInitialMs: number | null;
+  /** Fixed increment in ms per move, from gameFull's `clock.increment`.
+   * Same lifecycle as `clockInitialMs` -- gameFull-only, `null` otherwise. */
+  clockIncrementBaseMs: number | null;
 }
 
 /**
@@ -116,6 +130,11 @@ function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | nul
   const status = state.status;
   if (typeof movesField !== "string" || typeof status !== "string") return null;
   const trimmed = movesField.trim();
+  // Lichess sends `winner: "white" | "black"` on terminal gameState lines
+  // (mate / resign / outoftime). Anything else -- "draw", missing field --
+  // normalizes to null; buildPgn maps that to "1/2-1/2" or "*".
+  const winnerRaw = typeof state.winner === "string" ? state.winner : null;
+  const winner = winnerRaw === "white" || winnerRaw === "black" ? winnerRaw : null;
   return {
     moves: trimmed.length > 0 ? trimmed.split(/\s+/) : [],
     status,
@@ -131,6 +150,9 @@ function normalizeState(state: Record<string, unknown>): LichessMoveUpdate | nul
     blackTitle: null,
     initialFen: null,
     variant: null,
+    winner,
+    clockInitialMs: null,
+    clockIncrementBaseMs: null,
   };
 }
 
@@ -200,6 +222,19 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
     } else if (typeof variantRaw === "string") {
       variant = variantRaw;
     }
+    // gameFull's top level carries `clock: { initial, increment }` in ms
+    // for real-time games (both correspondence and unlimited omit the
+    // block). Read defensively; a missing/malformed clock just leaves
+    // the baseline fields `null`, which `buildPgn` treats as "omit the
+    // TimeControl tag".
+    const clockRaw = obj.clock;
+    let clockInitialMs: number | null = null;
+    let clockIncrementBaseMs: number | null = null;
+    if (typeof clockRaw === "object" && clockRaw !== null) {
+      const clock = clockRaw as Record<string, unknown>;
+      clockInitialMs = readOptionalNumber(clock, "initial");
+      clockIncrementBaseMs = readOptionalNumber(clock, "increment");
+    }
     return {
       ...state,
       whiteId: white.id,
@@ -210,6 +245,8 @@ export function parseLichessLine(raw: string): LichessMoveUpdate | null {
       blackTitle: black.title,
       initialFen,
       variant,
+      clockInitialMs,
+      clockIncrementBaseMs,
     };
   }
   if (obj.type === "gameState") {

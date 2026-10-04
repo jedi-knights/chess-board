@@ -41,6 +41,9 @@ describe("parseLichessLine", () => {
       blackTitle: null,
       initialFen: null,
       variant: null,
+      winner: null,
+      clockInitialMs: null,
+      clockIncrementBaseMs: null,
     });
   });
 
@@ -69,6 +72,9 @@ describe("parseLichessLine", () => {
       blackTitle: null,
       initialFen: null,
       variant: null,
+      winner: null,
+      clockInitialMs: null,
+      clockIncrementBaseMs: null,
     });
   });
 
@@ -89,6 +95,9 @@ describe("parseLichessLine", () => {
       blackTitle: null,
       initialFen: null,
       variant: null,
+      winner: null,
+      clockInitialMs: null,
+      clockIncrementBaseMs: null,
     });
   });
 

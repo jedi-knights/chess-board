@@ -575,6 +575,23 @@ this file and the human-facing docs.
   the panel, and we don't want a useEffect cleanup to tear down the auto-run state).
   It's also not persisted, by design: a transient operator action, not a configuration
   preference.
+- **Every finished Lichess bot game is auto-recorded to disk as PGN.** On the terminal-
+  status branch of `applyIncomingBotMoves` -- *before* the state teardown clears
+  `activeGameId` / `players` / clock baselines -- `recordFinishedGameToDisk` builds a
+  PGN via `src/lib/pgnExport.ts`'s `buildPgn` and fire-and-forgets a write via the Rust
+  `recording_write_pgn` command. Output lands at
+  `<app_data_dir>/recordings/<yyyy-mm-dd>_<lichessGameId>_<whiteName>_vs_<blackName>.pgn`
+  (`~/Library/Application Support/com.jediknights.chessboard/recordings/` on macOS).
+  Headers: seven-tag roster (Event / Site / Date / Round / White / Black / Result) plus
+  `WhiteTitle` / `BlackTitle` / `Variant` / `TimeControl` when available, and `SetUp` +
+  `FEN` for non-standard start positions. `Site` is the Lichess game URL, so a later
+  review can click through to the server-side record. Only bot mode records; human-mode
+  and Engine-vs-Engine are TODO. Rust-side path-traversal guard rejects any filename
+  containing a path separator or `..` segment, so a compromised frontend can't walk
+  outside the recordings dir. The recordings directory is fixed to the app data dir
+  by design (user asked for "fixed subfolder"), not a persisted path preference.
+  Follow-ups deferred: `{%eval ...}` / `{%clk ...}` move annotations from
+  `searchInfoHistory`, human-mode recording, in-UI "last saved to…" feedback.
 - **The engine label shows a derived "owner/repo" identifier** (`src/lib/engineIdentifier.ts`),
   not a raw path or bare filename, and the label text itself distinguishes "selected" from
   "running" (`Engine: x` vs `Running: x` vs `Starting: x…`) — do not collapse that back to a

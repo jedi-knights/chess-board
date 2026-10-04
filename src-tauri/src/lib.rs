@@ -3,6 +3,7 @@ mod engine;
 mod lichess;
 mod lichess_oauth;
 mod menu;
+mod recording;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -80,7 +81,8 @@ pub fn run() {
             lichess::lichess_bot_resign,
             lichess::lichess_bot_abort,
             lichess::lichess_bot_draw,
-            lichess::lichess_bot_claim_victory
+            lichess::lichess_bot_claim_victory,
+            recording::recording_write_pgn
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
