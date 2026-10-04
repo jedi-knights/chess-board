@@ -734,12 +734,21 @@ let listenersInstalled = false;
  * `lichess-bot-game-exit`) is unique to this store, so its raw listeners
  * still live here. The *account* event stream is shared with
  * `lichessStore` via `lichessEventBus` -- both routes converge on
- * `handleAccountEvent` below. */
+ * `handleAccountEvent` below.
+ *
+ * On HMR module replace, the `import.meta.hot?.dispose` callback
+ * unlistens the Tauri subscriptions and the gameStore watcher, and
+ * resets the latch so the fresh module instance can install cleanly --
+ * without this, every edit to this module (or its import graph)
+ * stacks another live listener on the same Rust events, causing
+ * duplicate `handleGameStart` / `applyIncomingBotMoves` dispatches
+ * and (via the gameStore subscriber) duplicate `maybeSendEngineMove`
+ * calls that POST the engine's own move to Lichess twice. */
 function installBotGameStreamListenersOnce() {
   if (listenersInstalled) return;
   listenersInstalled = true;
 
-  void listen<string>("lichess-bot-game-stream", (event) => {
+  const streamUnlisten = listen<string>("lichess-bot-game-stream", (event) => {
     // Same dual-parse shape as lichessStore's human-mode listener --
     // moves and opponentGone lines share the same NDJSON channel.
     const move = parseLichessLine(event.payload);
@@ -755,17 +764,35 @@ function installBotGameStreamListenersOnce() {
     }
   });
 
-  void listen<string>("lichess-bot-game-exit", (event) => {
+  const exitUnlisten = listen<string>("lichess-bot-game-exit", (event) => {
     if (useLichessBotStore.getState().status === "playing") {
       failBot(event.payload);
     }
   });
 
-  useGameStore.subscribe((state, prevState) => {
+  const unsubscribeGameStore = useGameStore.subscribe((state, prevState) => {
     if (state.plies.length !== prevState.plies.length) {
       maybeSendEngineMove();
     }
   });
+
+  if (import.meta.hot) {
+    import.meta.hot.dispose(async () => {
+      try {
+        (await streamUnlisten)();
+      } catch {
+        // swallow: dispose must not throw; a failed unlisten leaks at
+        // worst one listener (same outcome as before this fix).
+      }
+      try {
+        (await exitUnlisten)();
+      } catch {
+        /* same */
+      }
+      unsubscribeGameStore();
+      listenersInstalled = false;
+    });
+  }
 }
 
 const NOT_LISTENING = new Set<LichessBotStatus>(["idle", "error"]);

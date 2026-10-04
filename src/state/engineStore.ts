@@ -250,12 +250,19 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
   }
 
   /** Installs the stdout/exit event listeners and the turn-watcher exactly
-   * once per store instance (so once per side, per app lifetime). */
+   * once per store instance (so once per side, per app lifetime). On HMR
+   * module replace, the `import.meta.hot?.dispose` callback unlistens the
+   * Tauri subscriptions and the gameStore watcher, and resets the latch
+   * so the fresh module instance can install cleanly -- without this,
+   * every edit to this module (or its import graph) stacks another live
+   * listener on the same Rust event, duplicating `applyEngineBestMove`
+   * calls (hence the dup-guard note in CLAUDE.md) and firing
+   * `maybeRequestEngineMove` multiple times per plies change. */
   function installListenersOnce() {
     if (listenersInstalled) return;
     listenersInstalled = true;
 
-    void listen<string>(`engine-stdout-${side}`, (event) => {
+    const stdoutUnlisten = listen<string>(`engine-stdout-${side}`, (event) => {
       const message = parseUciLine(event.payload);
       if (message.type === "bestmove") {
         applyEngineBestMove(message.move);
@@ -277,7 +284,7 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
       }
     });
 
-    void listen<EngineExitPayload>(`engine-exit-${side}`, (event) => {
+    const exitUnlisten = listen<EngineExitPayload>(`engine-exit-${side}`, (event) => {
       if (stopRequested) {
         // Expected -- this is the exit our own stopEngine() caused.
         stopRequested = false;
@@ -286,11 +293,29 @@ export function createEngineStore(side: Side): UseBoundStore<StoreApi<EngineStor
       failEngine("crashed", formatEngineExitMessage(event.payload));
     });
 
-    useGameStore.subscribe((state, prevState) => {
+    const unsubscribeGameStore = useGameStore.subscribe((state, prevState) => {
       if (state.plies.length !== prevState.plies.length) {
         maybeRequestEngineMove();
       }
     });
+
+    if (import.meta.hot) {
+      import.meta.hot.dispose(async () => {
+        try {
+          (await stdoutUnlisten)();
+        } catch {
+          // swallow: a failed unlisten is at worst a leaked listener
+          // (same outcome as before this fix); dispose must not throw.
+        }
+        try {
+          (await exitUnlisten)();
+        } catch {
+          /* same */
+        }
+        unsubscribeGameStore();
+        listenersInstalled = false;
+      });
+    }
   }
 
   const useEngineStore = create<EngineStoreState>()(
