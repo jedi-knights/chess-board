@@ -553,6 +553,28 @@ this file and the human-facing docs.
   Black's own value stays. Do not "deduplicate" by moving `optionOverrides` into a
   single shared slot — that breaks the independent per-side design for Engine-vs-Engine
   mode.
+- **The "Auto-run matches" facility is a module-local state machine, not a React effect.**
+  `lichessBotStore`'s `autoRunning` / `autoRunQueue` / `autoRunCurrentUsername` state
+  plus a module-level `autoRunTimeout` handle drive a four-phase loop: refill queue →
+  pop next username → fire `lichess_challenge_bot` → wait for `gameStart` (accept) /
+  `challengeDeclined` (refuse) / 15 s timeout (silent). `autoRunStep` is the single
+  state-advance entry; it short-circuits on `!autoRunning`, on
+  `autoRunCurrentUsername !== null` (challenge in flight), or on
+  `status !== "listening"` (game active / idle / error) — every other code path reaches
+  it by `scheduleAutoRunRetry(ms)` or a direct call. Three waits by design:
+  `AUTO_RUN_AWAIT_RESPONSE_MS = 15_000` for silent-bot timeout,
+  `AUTO_RUN_PACING_MS = 1_000` after a POST error or decline (keeps us under Lichess's
+  unpublished per-minute challenge rate limit), and `AUTO_RUN_IDLE_RETRY_MS = 30_000`
+  when a refill returned zero candidates (every online bot is in the decline-TTL
+  window). Reuses the existing `declinedBots` set so `noBot` policy refusals (1-year
+  TTL) and `bot.vsBot.day` rate-limit declines (TTL from Lichess's `ratelimit.seconds`
+  or the 24 h default) are skipped automatically on the next refill. `stopListening`
+  also cancels auto-run so the bot slot can go cleanly offline. Resist refactoring
+  this into a React `useEffect` loop — the state machine must survive `LichessBotControls`
+  unmounts (e.g. a mode-switch mid-cycle via `useViewMenu`'s menu lock would unmount
+  the panel, and we don't want a useEffect cleanup to tear down the auto-run state).
+  It's also not persisted, by design: a transient operator action, not a configuration
+  preference.
 - **The engine label shows a derived "owner/repo" identifier** (`src/lib/engineIdentifier.ts`),
   not a raw path or bare filename, and the label text itself distinguishes "selected" from
   "running" (`Engine: x` vs `Running: x` vs `Starting: x…`) — do not collapse that back to a

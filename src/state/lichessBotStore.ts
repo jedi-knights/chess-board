@@ -5,6 +5,7 @@ import { persist } from "zustand/middleware";
 import {
   decideChallenge,
   isTerminalStatus,
+  parseBotOnlineList,
   parseLichessLine,
   parseLichessOpponentGone,
   rulesFromLichessVariant,
@@ -246,6 +247,27 @@ interface LichessBotStoreState {
   upgradeToBotAccount: () => Promise<boolean>;
   startListening: () => Promise<void>;
   stopListening: () => Promise<void>;
+  /** Transient (not persisted) auto-run state. When true, the store
+   * walks the current online-bot list top-to-bottom, firing challenges,
+   * re-fetching the list once it's exhausted, and continuing until
+   * `stopAutoRun` is called. Each iteration respects the same
+   * `declinedBots` filter the Browse-Online-Bots list uses so already-
+   * known-dead opponents are skipped. */
+  autoRunning: boolean;
+  /** Remaining usernames to try in the current auto-run cycle, in order. */
+  autoRunQueue: string[];
+  /** The username whose challenge POST was most recently fired and whose
+   * response we're awaiting. `null` between iterations or when not
+   * auto-running. Acts as a re-entry guard: `autoRunStep` returns early
+   * when this is non-null. */
+  autoRunCurrentUsername: string | null;
+  /** Idempotent on `autoRunning === true`. Requires `status === "listening"`;
+   * silently no-ops otherwise (the UI gates the button on canChallenge). */
+  startAutoRun: () => void;
+  /** Idempotent. Cancels any pending retry timeout. Does *not* resign a
+   * currently-active game -- stopping auto-run just means "don't queue
+   * more", so the current game plays to its natural end. */
+  stopAutoRun: () => void;
   /** In-game actions (Bot API). Same set as the human-mode counterpart:
    * resign, abort, draw agree/decline, claim-victory. All target the
    * currently-active game id; `null` is a defensive no-op. */
@@ -437,6 +459,11 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
   }
 
   logDebug(`game starting: ${gameId}, engine plays ${botColor}`);
+  // A game is starting -- if auto-run was waiting on a challenge
+  // response, cancel the timeout and clear the pending username.
+  // Status will transition to "playing" during this function, so
+  // `autoRunStep` naturally stays paused until terminal cleanup.
+  clearAutoRunTimeout();
   useLichessBotStore.setState({
     activeGameId: gameId,
     lastSentUci: null,
@@ -444,6 +471,7 @@ async function handleGameStart(gameId: string, botColor: "w" | "b") {
     serverClocks: null,
     players: null,
     opponentGone: null,
+    autoRunCurrentUsername: null,
   });
 
   // Same ordering as EngineControls/LichessControls: reset the board
@@ -645,6 +673,10 @@ function applyIncomingBotMoves(update: ReturnType<typeof parseLichessLine>) {
     });
     useGameStore.getState().exitPlayMode();
     invoke("lichess_stop_game").catch(() => {});
+    // Resume auto-run now that we're back to "listening".
+    if (useLichessBotStore.getState().autoRunning) {
+      void autoRunStep();
+    }
   }
 }
 
@@ -718,6 +750,20 @@ function routeAccountEvent(event: LichessAccountEvent) {
             ? upsertDeclinedBot(state.declinedBots, username, ttlMs)
             : state.declinedBots,
         }));
+        // Advance auto-run if this decline was for the bot we're
+        // currently waiting on. The username comparison guards against
+        // a late-arriving decline for a prior (already-timed-out) try
+        // triggering a double-step.
+        const current = useLichessBotStore.getState();
+        if (
+          current.autoRunning &&
+          current.autoRunCurrentUsername !== null &&
+          username === current.autoRunCurrentUsername
+        ) {
+          clearAutoRunTimeout();
+          useLichessBotStore.setState({ autoRunCurrentUsername: null });
+          scheduleAutoRunRetry(AUTO_RUN_PACING_MS);
+        }
       }
       logDebug(
         `challenge ${event.challengeId} declined${event.reason ? ` (${event.reason})` : ""}`,
@@ -733,6 +779,141 @@ function routeAccountEvent(event: LichessAccountEvent) {
       break;
   }
 }
+
+// -------------------------- Auto-run state machine --------------------------
+//
+// The auto-run facility keeps challenging online bots top-to-bottom of the
+// Browse-Online-Bots list until one accepts. On exhaustion (every bot in
+// the fetched list is either in the decline-TTL window or has already been
+// tried this cycle) it re-fetches and starts over. Transitions out of
+// `status === "listening"` (into "playing" / "idle" / "error") naturally
+// pause the loop; it resumes from the terminal-status cleanup when the
+// game ends.
+//
+// Design shape, same mode-local-timing idiom as `pump_ndjson_stream`'s
+// retry schedule in `lichess.rs`:
+//   - `autoRunStep` is the single state-advance entrypoint. It no-ops when
+//     `!autoRunning`, when `autoRunCurrentUsername !== null` (we're already
+//     mid-challenge), or when `status !== "listening"` (in a game, idle,
+//     errored). Every other path triggers it via `scheduleAutoRunRetry`
+//     or directly.
+//   - A single `autoRunTimeout` handle holds the pending retry so Stop /
+//     a response event can cancel cleanly. Not stored on the zustand
+//     state because it's a timer id, not UI state.
+
+/** Wait after an auto-run challenge POST succeeds for the target to
+ * accept (gameStart) or decline (challengeDeclined). If neither fires
+ * within this window, move on to the next bot. 15 s is comfortably
+ * above the typical Lichess bot response time (~1-3 s) and below the
+ * attention-span threshold where a user would wonder why the UI is
+ * stuck. */
+const AUTO_RUN_AWAIT_RESPONSE_MS = 15_000;
+/** Minimum pause between consecutive auto-run challenges after a POST
+ * failure or decline. Lichess's bot challenge endpoint has an
+ * unpublished per-minute rate limit; this spaces out requests to stay
+ * under it. The 15 s silent-bot wait above is itself enough pacing in
+ * that case; this one covers the "immediate error, try next" path. */
+const AUTO_RUN_PACING_MS = 1_000;
+/** When the queue is empty and a fresh fetch returns no new candidates
+ * (every online bot is in the decline-TTL window), wait this long
+ * before trying again. Longer than the pacing delay because the only
+ * way to break out of this loop is for a bot's decline-TTL to expire,
+ * for Lichess to list a new online bot, or for the operator to click
+ * Stop -- none of which happen on a one-second scale. */
+const AUTO_RUN_IDLE_RETRY_MS = 30_000;
+
+let autoRunTimeout: number | null = null;
+
+function clearAutoRunTimeout() {
+  if (autoRunTimeout !== null) {
+    window.clearTimeout(autoRunTimeout);
+    autoRunTimeout = null;
+  }
+}
+
+function scheduleAutoRunRetry(ms: number) {
+  clearAutoRunTimeout();
+  autoRunTimeout = window.setTimeout(() => {
+    autoRunTimeout = null;
+    void autoRunStep();
+  }, ms);
+}
+
+async function refillAutoRunQueue(): Promise<string[]> {
+  try {
+    const raw = await invoke<string>("lichess_bot_online", { nb: 200 });
+    const bots = parseBotOnlineList(raw);
+    const state = useLichessBotStore.getState();
+    const now = Date.now();
+    const declined = new Set(
+      state.declinedBots.filter((e) => e.expiresAtMs > now).map((e) => e.username),
+    );
+    return bots.map((b) => b.username).filter((u) => !declined.has(u));
+  } catch (err) {
+    appendDebugLog(`[lichess-bot] auto-run refill failed: ${String(err)}`);
+    return [];
+  }
+}
+
+async function autoRunStep() {
+  const state = useLichessBotStore.getState();
+  if (!state.autoRunning) return;
+  // Re-entry guard: a challenge is in flight; the response path will
+  // advance us (or the 15 s timeout fallback will).
+  if (state.autoRunCurrentUsername !== null) return;
+  // In a game / idle / errored: wait for a listening state to resume
+  // (the terminal-status cleanup and startListening both re-trigger).
+  if (state.status !== "listening") return;
+
+  let queue = state.autoRunQueue;
+  if (queue.length === 0) {
+    queue = await refillAutoRunQueue();
+    if (!useLichessBotStore.getState().autoRunning) return;
+    if (queue.length === 0) {
+      appendDebugLog("[lichess-bot] auto-run: no candidates after refill, waiting");
+      scheduleAutoRunRetry(AUTO_RUN_IDLE_RETRY_MS);
+      return;
+    }
+  }
+
+  const [username, ...rest] = queue;
+  useLichessBotStore.setState({
+    autoRunQueue: rest,
+    autoRunCurrentUsername: username,
+  });
+
+  try {
+    const { challengeColor, sendRated, clockLimitMinutes, clockIncrementSeconds } =
+      useLichessBotStore.getState();
+    appendDebugLog(`[lichess-bot] auto-run challenging ${username}`);
+    await invoke("lichess_challenge_bot", {
+      username,
+      clockLimitSeconds: clockLimitMinutes * 60,
+      clockIncrementSeconds,
+      color: challengeColor,
+      rated: sendRated,
+    });
+    // POST landed; wait for the target to accept, decline, or stay silent.
+    scheduleAutoRunRetry(AUTO_RUN_AWAIT_RESPONSE_MS);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    appendDebugLog(`[lichess-bot] auto-run POST failed for ${username}: ${message}`);
+    const rateLimitSeconds = parseRateLimitSeconds(message) ?? undefined;
+    useLichessBotStore.getState().recordBotChallengeFailure(username, rateLimitSeconds);
+    useLichessBotStore.setState({ autoRunCurrentUsername: null });
+    if (!useLichessBotStore.getState().autoRunning) return;
+    scheduleAutoRunRetry(AUTO_RUN_PACING_MS);
+  }
+}
+
+/** Fire-and-forget append to the on-disk debug log, mirroring the
+ * engineStore closure helper but at module scope so the auto-run
+ * state machine can log without a side-tagged prefix. */
+function appendDebugLog(message: string) {
+  invoke("debug_log_append", { message }).catch(() => {});
+}
+
+// ----------------------------------------------------------------------------
 
 let listenersInstalled = false;
 
@@ -828,6 +1009,9 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
       lastSentUci: null,
       lastOutgoingChallengeDecline: null,
       declinedBots: [],
+      autoRunning: false,
+      autoRunQueue: [],
+      autoRunCurrentUsername: null,
 
       refreshHasToken: async () => {
         const hasToken = await invoke<boolean>("lichess_token_has", { slot: BOT_SLOT }).catch(
@@ -1040,6 +1224,9 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
 
       stopListening: async () => {
         logDebug("stop listening requested");
+        // Stopping the listening session must also halt auto-run -- the
+        // whole bot slot is going offline. Timeout + queue reset.
+        clearAutoRunTimeout();
         try {
           await invoke("lichess_stop_events");
           await invoke("lichess_stop_game");
@@ -1060,9 +1247,36 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
             serverClocks: null,
             players: null,
             opponentGone: null,
+            autoRunning: false,
+            autoRunQueue: [],
+            autoRunCurrentUsername: null,
           });
           useGameStore.getState().exitPlayMode();
         }
+      },
+
+      startAutoRun: () => {
+        const state = useLichessBotStore.getState();
+        if (state.autoRunning) return;
+        if (state.status !== "listening") return;
+        logDebug("auto-run starting");
+        set({
+          autoRunning: true,
+          autoRunQueue: [],
+          autoRunCurrentUsername: null,
+        });
+        void autoRunStep();
+      },
+
+      stopAutoRun: () => {
+        if (!useLichessBotStore.getState().autoRunning) return;
+        logDebug("auto-run stopped");
+        clearAutoRunTimeout();
+        set({
+          autoRunning: false,
+          autoRunQueue: [],
+          autoRunCurrentUsername: null,
+        });
       },
     }),
     {
