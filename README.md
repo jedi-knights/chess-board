@@ -5,7 +5,7 @@ A Tauri + Three.js desktop app for visualizing and stepping through chess games 
 [![CI](https://github.com/jedi-knights/chess-board/actions/workflows/ci.yml/badge.svg)](https://github.com/jedi-knights/chess-board/actions/workflows/ci.yml)
 [![Badge](https://github.com/jedi-knights/chess-board/actions/workflows/badge.yaml/badge.svg)](https://github.com/jedi-knights/chess-board/actions/workflows/badge.yaml)
 [![Release](https://github.com/jedi-knights/chess-board/actions/workflows/release.yml/badge.svg)](https://github.com/jedi-knights/chess-board/actions/workflows/release.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-88.2%25-green)](https://jedi-knights.github.io/chess-board/?v=84)
+[![Coverage](https://img.shields.io/badge/Coverage-86.2%25-green)](https://jedi-knights.github.io/chess-board/?v=85)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <p align="center">
