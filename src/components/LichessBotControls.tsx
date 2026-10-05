@@ -121,6 +121,23 @@ export function LichessBotControls() {
     }
   }, [canListen, status, startListening]);
 
+  // Auto-start auto-run once per mount, right after the auto-start-
+  // listening transition above lands us in "listening". Same latch
+  // discipline as didAutoStartRef: fires exactly once, so clicking
+  // Stop auto-run returns to listening without a retry loop. The
+  // guard on `!autoRunning` is defensive -- the latch handles the
+  // one-shot semantics on its own, but it also keeps us from
+  // scheduling a redundant startAutoRun if hot-reload re-renders the
+  // component while auto-run is already going.
+  const didAutoRunRef = useRef(false);
+  useEffect(() => {
+    if (didAutoRunRef.current) return;
+    if (status === "listening" && !autoRunning) {
+      didAutoRunRef.current = true;
+      startAutoRun();
+    }
+  }, [status, autoRunning, startAutoRun]);
+
   async function chooseEngine() {
     const picked = await open({ multiple: false });
     if (!picked || Array.isArray(picked)) return;
