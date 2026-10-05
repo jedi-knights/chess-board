@@ -3,11 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
 import { deriveEngineIdentifier } from "../lib/engineIdentifier";
 import { parseBotOnlineList, type LichessBotSummary } from "../lib/lichess";
-import {
-  categoryFor,
-  matchPreset,
-  TIME_CONTROL_PRESETS,
-} from "../lib/lichessTimeControl";
+import { matchPreset, TIME_CONTROL_PRESETS } from "../lib/lichessTimeControl";
 import { ENGINE_NOT_RUNNING, useWhiteEngineStore } from "../state/engineStore";
 import { parseRateLimitSeconds, useLichessBotStore } from "../state/lichessBotStore";
 import { EngineOptions } from "./EngineOptions";
@@ -222,11 +218,6 @@ export function LichessBotControls() {
   return (
     <div className="lichess-controls">
       <h2>Bridge engine to Lichess (Bot API)</h2>
-      <p className="hint">
-        This mode uses its own bot-slot Lichess token, separate from the human slot in
-        Play-on-Lichess mode. Use a token from an account you have dedicated to running
-        engines — never your regular human account.
-      </p>
       {!hasToken ? (
         <>
           {oauthInFlight ? (
@@ -293,9 +284,34 @@ export function LichessBotControls() {
         </>
       )}
 
-      <button onClick={chooseEngine} disabled={listening}>
-        {enginePath ? `Engine: ${deriveEngineIdentifier(enginePath)}` : "Choose engine binary…"}
-      </button>
+      <div className="lichess-token-field">
+        <button onClick={chooseEngine} disabled={listening}>
+          {enginePath ? `Engine: ${deriveEngineIdentifier(enginePath)}` : "Choose engine binary…"}
+        </button>
+        {status !== "playing" && !previewReady && (
+          <button
+            onClick={() => enginePath && void startPreviewEngine(enginePath)}
+            disabled={!enginePath || !ENGINE_NOT_RUNNING.has(previewEngineStatus)}
+          >
+            {previewEngineStatus === "starting" ? "Starting…" : "Preview options"}
+          </button>
+        )}
+        {status !== "playing" && previewReady && (
+          <button onClick={() => void stopPreviewEngine()}>Stop preview</button>
+        )}
+      </div>
+      {previewReady && status !== "playing" && (
+        <>
+          <EngineOptions side="w" />
+          {previewEnginePath && previewEnginePath !== enginePath && (
+            <p className="hint">
+              Previewing a different engine ({deriveEngineIdentifier(previewEnginePath)}) than
+              the one currently chosen ({enginePath ? deriveEngineIdentifier(enginePath) : "none"})
+              &mdash; click Stop preview, pick again, then re-open preview.
+            </p>
+          )}
+        </>
+      )}
       <label className="engine-field">
         Movetime cap (ms)
         <input
@@ -338,49 +354,10 @@ export function LichessBotControls() {
       <p className="engine-status">
         Status: {status}
         {activeGameId && ` — playing ${activeGameId}`}
-        {enginePath && ` (engine: ${deriveEngineIdentifier(enginePath)})`}
       </p>
       {errorMessage && <p className="load-error">{errorMessage}</p>}
 
-      <h3>Engine options</h3>
-      <p className="hint">
-        Spawn the engine briefly to inspect and tweak its UCI options (UseNNUE,
-        Hash, EvalFile, &hellip;) before accepting a challenge. Edits persist across
-        sessions. Not available during a live game &mdash; the panel below
-        appears automatically when a game is in progress.
-      </p>
-      {status === "playing" ? (
-        // During a live game, EngineOptions renders via the normal
-        // controller-based path (gameStore.controllers[side] === "engine").
-        // Rendering it here with a forced side would double-render; let
-        // the outer App-level EngineOptions handle it.
-        <p className="hint">Game in progress &mdash; see the options panel below.</p>
-      ) : !previewReady ? (
-        <button
-          onClick={() => enginePath && void startPreviewEngine(enginePath)}
-          disabled={!enginePath || !ENGINE_NOT_RUNNING.has(previewEngineStatus)}
-        >
-          {previewEngineStatus === "starting" ? "Starting…" : "Preview engine options"}
-        </button>
-      ) : (
-        <>
-          <button onClick={() => void stopPreviewEngine()}>Stop preview</button>
-          <EngineOptions side="w" />
-          {previewEnginePath && previewEnginePath !== enginePath && (
-            <p className="hint">
-              Previewing a different engine ({deriveEngineIdentifier(previewEnginePath)}) than
-              the one currently chosen ({enginePath ? deriveEngineIdentifier(enginePath) : "none"})
-              &mdash; click Stop preview, pick again, then re-open preview.
-            </p>
-          )}
-        </>
-      )}
-
       <h3>Challenge an engine on Lichess</h3>
-      <p className="hint">
-        Needs "Start listening" above running first, so the resulting game has somewhere
-        to land. Default casual; tick "Rated" to affect both bots&rsquo; ratings.
-      </p>
       <div className="lichess-token-field">
         <label className="engine-field">
           Time control
@@ -405,26 +382,6 @@ export function LichessBotControls() {
           </select>
         </label>
         <label className="engine-field">
-          Minutes
-          <input
-            type="number"
-            min={1}
-            max={60}
-            value={clockLimitMinutes}
-            onChange={(e) => setClockLimitMinutes(Number(e.target.value))}
-          />
-        </label>
-        <label className="engine-field">
-          Increment (s)
-          <input
-            type="number"
-            min={0}
-            max={60}
-            value={clockIncrementSeconds}
-            onChange={(e) => setClockIncrementSeconds(Number(e.target.value))}
-          />
-        </label>
-        <label className="engine-field">
           Color
           <select value={color} onChange={(e) => setColor(e.target.value as typeof color)}>
             <option value="random">Random</option>
@@ -441,11 +398,31 @@ export function LichessBotControls() {
           Rated
         </label>
       </div>
-      <p className="hint">
-        Category: {categoryFor(clockLimitMinutes, clockIncrementSeconds)} — rated games
-        update the {categoryFor(clockLimitMinutes, clockIncrementSeconds).toLowerCase()}{" "}
-        rating pool.
-      </p>
+      <details>
+        <summary>Custom clock…</summary>
+        <div className="lichess-token-field">
+          <label className="engine-field">
+            Minutes
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={clockLimitMinutes}
+              onChange={(e) => setClockLimitMinutes(Number(e.target.value))}
+            />
+          </label>
+          <label className="engine-field">
+            Increment (s)
+            <input
+              type="number"
+              min={0}
+              max={60}
+              value={clockIncrementSeconds}
+              onChange={(e) => setClockIncrementSeconds(Number(e.target.value))}
+            />
+          </label>
+        </div>
+      </details>
       <button onClick={browseBots} disabled={loadingBots}>
         {loadingBots ? "Loading…" : "Browse online bots"}
       </button>
