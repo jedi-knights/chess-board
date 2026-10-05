@@ -41,6 +41,7 @@ export function LichessBotControls() {
     (s) => s.clearOutgoingChallengeDecline,
   );
   const recordBotChallengeFailure = useLichessBotStore((s) => s.recordBotChallengeFailure);
+  const clearDeclinedBots = useLichessBotStore((s) => s.clearDeclinedBots);
   const verifyAccount = useLichessBotStore((s) => s.verifyAccount);
   const oauthLogin = useLichessBotStore((s) => s.oauthLogin);
   const cancelOauthLogin = useLichessBotStore((s) => s.cancelOauthLogin);
@@ -490,7 +491,8 @@ export function LichessBotControls() {
             {hiddenCount > 0 && (
               <p className="hint">
                 {hiddenCount} bot{hiddenCount === 1 ? "" : "s"} hidden (previously declined
-                or rate-limited; they'll return once their quota resets).
+                or rate-limited; they'll return once their quota resets).{" "}
+                <button onClick={clearDeclinedBots}>Clear hidden list</button>
               </p>
             )}
             {visible.length > 0 && (

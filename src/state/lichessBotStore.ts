@@ -248,6 +248,13 @@ interface LichessBotStoreState {
    * via `parseRateLimitSeconds`) sets a precise expiry; otherwise the
    * default 24 h TTL applies. */
   recordBotChallengeFailure: (username: string, rateLimitSeconds?: number) => void;
+  /** Nukes the entire `declinedBots` list. Recovery path for the dev
+   * case where an account-wide 429 cascade (before `isAccountRateLimitError`
+   * learned to skip blacklisting) populated the list with innocent
+   * targets, leaving the Browse-Online-Bots filter hiding everything.
+   * Also useful if the operator just wants to re-try bots sooner than
+   * their decline TTL would allow. */
+  clearDeclinedBots: () => void;
   /** Irreversible on Lichess's side -- see lichess.rs's lichess_bot_upgrade
    * doc comment. The caller (the UI) is responsible for a separate,
    * explicit confirmation step before calling this. Returns whether it
@@ -944,6 +951,28 @@ const AUTO_RUN_PACING_MS = 1_000;
  * for Lichess to list a new online bot, or for the operator to click
  * Stop -- none of which happen on a one-second scale. */
 const AUTO_RUN_IDLE_RETRY_MS = 30_000;
+/** Pause after a generic 429 (our own account's per-minute challenge
+ * rate limit, as opposed to the target bot's `bot.vsBot.day` quota
+ * which carries a specific `ratelimit.seconds` field). Rust's
+ * `post_with_retry` already sleeps 60 s and retries once on 429 before
+ * surfacing the error here; the extra wait on top of that gives the
+ * per-minute window a solid chance to reset so the NEXT challenge
+ * doesn't just hit the same limit again. */
+const AUTO_RUN_RATE_LIMIT_COOLDOWN_MS = 60_000;
+
+/** Detects a generic Lichess 429 ("Too many requests. Try again later.")
+ * -- our account's per-minute rate limit. Target-bot-specific limits
+ * (`bot.vsBot.day`) carry a `ratelimit.seconds` field and go through
+ * the normal `parseRateLimitSeconds` path. The 429 shape we look for
+ * here has NO ratelimit object -- that's the signal that this isn't
+ * the target bot's fault, so we skip the per-bot blacklist. */
+function isAccountRateLimitError(message: string): boolean {
+  if (!message.includes("429")) return false;
+  // If `ratelimit.seconds` is present, it's a target-specific limit --
+  // parseRateLimitSeconds handles that correctly (24 h or server-stated
+  // TTL on the target). Only match the generic account-wide 429.
+  return parseRateLimitSeconds(message) === null;
+}
 
 let autoRunTimeout: number | null = null;
 
@@ -1033,10 +1062,24 @@ async function autoRunStep() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     appendDebugLog(`[lichess-bot] auto-run POST failed for ${username}: ${message}`);
-    const rateLimitSeconds = parseRateLimitSeconds(message) ?? undefined;
-    useLichessBotStore.getState().recordBotChallengeFailure(username, rateLimitSeconds);
     useLichessBotStore.setState({ autoRunCurrentUsername: null });
     if (!useLichessBotStore.getState().autoRunning) return;
+    if (isAccountRateLimitError(message)) {
+      // Our account's per-minute rate limit, not the target bot's fault
+      // -- do NOT blacklist them, and wait longer than the normal pacing
+      // so the per-minute window actually resets. Observed in dev: the
+      // naive "always record" path was blacklisting every innocent bot
+      // for 24 h as auto-run burned through the list hitting 429s,
+      // emptying the Browse-Online-Bots view.
+      appendDebugLog("[lichess-bot] auto-run: account rate limited, cooling down");
+      scheduleAutoRunRetry(AUTO_RUN_RATE_LIMIT_COOLDOWN_MS);
+      return;
+    }
+    // Legitimate per-bot failure (offline, variant mismatch, bot.vsBot.day
+    // quota with a specific ratelimit.seconds) -- record them with the
+    // right TTL and move on at normal pacing.
+    const rateLimitSeconds = parseRateLimitSeconds(message) ?? undefined;
+    useLichessBotStore.getState().recordBotChallengeFailure(username, rateLimitSeconds);
     scheduleAutoRunRetry(AUTO_RUN_PACING_MS);
   }
 }
@@ -1244,6 +1287,11 @@ export const useLichessBotStore = create<LichessBotStoreState>()(
         set((state) => ({
           declinedBots: upsertDeclinedBot(state.declinedBots, username, ttlMs),
         }));
+      },
+
+      clearDeclinedBots: () => {
+        logDebug("clearing declined-bots list");
+        set({ declinedBots: [] });
       },
 
       upgradeToBotAccount: async () => {
